@@ -15,6 +15,11 @@ type centroid struct {
 
 const locked = math.MinInt64
 
+type Distribution interface {
+	ValueAt(q float64) (v float64)
+	QuantileOf(v float64) (q float64)
+}
+
 // TDigest approximates a distribution of floating point numbers.
 type TDigest struct {
 	config
@@ -33,6 +38,23 @@ type TDigest struct {
 		numMerged   int
 		mergedCount float64
 	}
+}
+
+func (td *TDigest) Read(f func(d Distribution)) {
+	td.merge()
+	td.mu.RLock()
+	defer td.mu.RUnlock()
+	f((*readTDigest)(td))
+}
+
+type readTDigest TDigest
+
+func (rtd *readTDigest) ValueAt(q float64) float64 {
+	return (*TDigest)(rtd).valueAtRLocked(q)
+}
+
+func (rtd *readTDigest) QuantileOf(v float64) float64 {
+	panic("not implemented")
 }
 
 func New(options ...Option) *TDigest {
@@ -68,9 +90,10 @@ func (td *TDigest) Merge(other *TDigest) {
 	}
 }
 
-func (td *TDigest) getAddIndexRLocked() int {
+func (td *TDigest) getAddIndexRLocked() (r int) {
 	for {
-		idx := int(atomic.AddInt64(&td.unmergedIdx, 1)) - 1
+		idx := int(atomic.AddInt64(&td.unmergedIdx, 1))
+		idx--
 		if idx < len(td.centroids) {
 			return idx
 		} else if idx == len(td.centroids) {
@@ -99,11 +122,11 @@ func (td *TDigest) getAddIndexLocked() int {
 
 // TODO(ajwerner): optimize reading by storing CDF instead PDF
 
-func (td *TDigest) ValueAt(q float64) float64 {
-	td.merge()
-	td.mu.RLock()
-	defer td.mu.RUnlock()
-	return td.valueAtRLocked(q)
+func (td *TDigest) ValueAt(q float64) (v float64) {
+	td.Read(func(d Distribution) {
+		v = d.ValueAt(q)
+	})
+	return v
 }
 
 func isVerySmall(v float64) bool {
@@ -155,6 +178,22 @@ func (td *TDigest) merge() {
 	td.mergeLocked()
 }
 
+func assertCountsIncreasing(c centroids) {
+	for i := range c[:len(c)] {
+		if c[i].count <= c[i+1].count {
+			panic(fmt.Errorf("count at %v %v <= %v %v %v", i, c[i], i+1, c[i+1], c))
+		}
+	}
+}
+
+func assertCountsNonZero(c centroids) {
+	for i := range c {
+		if c[i].count == 0 {
+			panic(fmt.Errorf("count at %v %v == 0", i, c[i]))
+		}
+	}
+}
+
 func (td *TDigest) mergeLocked() {
 	idx := int(atomic.LoadInt64(&td.unmergedIdx))
 	if idx > len(td.centroids) {
@@ -162,7 +201,10 @@ func (td *TDigest) mergeLocked() {
 	}
 	centroids := td.centroids[:idx]
 	sort.Sort(centroids)
-	totalCount := centroids.totalCount()
+	totalCount := 0.0
+	for i := 0; i < len(centroids); i++ {
+		totalCount += centroids[i].count
+	}
 	denom := 2 * math.Pi * totalCount * math.Log(totalCount)
 	normalizer := td.compression / denom
 	cur := 0
@@ -176,8 +218,11 @@ func (td *TDigest) mergeLocked() {
 		if shouldAdd {
 			centroids[cur].count += centroids[i].count
 			delta := centroids[i].mean - centroids[cur].mean
-			weightedDelta := (delta * centroids[i].count) / centroids[cur].count
-			centroids[cur].mean += weightedDelta
+			if delta > 0 {
+				weightedDelta := (delta * centroids[i].count) /
+					centroids[cur].count
+				centroids[cur].mean += weightedDelta
+			}
 		} else {
 			countSoFar += centroids[cur].count
 			cur++

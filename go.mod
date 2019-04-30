@@ -1,1 +1,1 @@
-module github.com/ajwerner/tdigestgo
+module github.com/ajwerner/tdigest

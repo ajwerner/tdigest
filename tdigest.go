@@ -1,4 +1,6 @@
-package tdigestgo
+// Package tdigest provides a concurrent, streaming quantiles estimation data
+// structure for float64 data.
+package tdigest
 
 import (
 	"fmt"
@@ -38,8 +40,10 @@ func New(options ...Option) *TDigest {
 	return &td
 }
 
+// capFromCompression uses a fixed size buffer of 6x compression.
+// TODO(ajwerner): make this configurable.
 func capFromCompression(compression float64) int {
-	return (6 * (int)(compression)) + 10
+	return (6 * (int)(compression))
 }
 
 // Distribution provides read access to a float64 valued distribution by
@@ -57,10 +61,28 @@ func (td *TDigest) Read(f func(d Distribution)) {
 	f((*readTDigest)(td))
 }
 
+// ValueAt returns the value of the quantile q.
+// If q is not in [0, 1], ValueAt will panic.
+// An empty TDigest will return 0.
+func (td *TDigest) ValueAt(q float64) (v float64) {
+	td.Read(func(d Distribution) { v = d.ValueAt(q) })
+	return v
+}
+
+// QuantileOf returns the estimated quantile at which this value falls in the
+// distribution. If the v is smaller than any recorded value 0.0 will be
+// returned and if v is larger than any recorded value 1.0 will be returned.
+// An empty TDigest will return 0.0 for all values.
+func (td *TDigest) QuantileOf(v float64) (q float64) {
+	td.Read(func(d Distribution) { q = d.QuantileOf(v) })
+	return q
+}
+
 type centroid struct {
 	mean, count float64
 }
 
+// Add adds the provided data to the TDigest.
 func (td *TDigest) Add(mean, count float64) {
 	td.mu.RLock()
 	defer td.mu.RUnlock()
@@ -115,23 +137,6 @@ func (td *TDigest) getAddIndexLocked() int {
 		}
 		td.compressLocked()
 	}
-}
-
-// ValueAt returns the value of the quantile q.
-// If q is not in [0, 1], ValueAt will panic.
-// An empty TDigest will return 0.
-func (td *TDigest) ValueAt(q float64) (v float64) {
-	td.Read(func(d Distribution) { v = d.ValueAt(q) })
-	return v
-}
-
-// QuantileOf returns the estimated quantile at which this value falls in the
-// distribution. If the v is smaller than any recorded value 0.0 will be
-// returned and if v is larger than any recorded value 1.0 will be returned.
-// An empty TDigest will return 0.0 for all values.
-func (td *TDigest) QuantileOf(v float64) (q float64) {
-	td.Read(func(d Distribution) { q = d.QuantileOf(v) })
-	return q
 }
 
 func (td *TDigest) quantileOfRLocked(v float64) float64 {

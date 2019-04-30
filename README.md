@@ -1,5 +1,5 @@
 # tdigest
-[![Documentation](https://godoc.org/github.com/ajwerner/tdigestgo?status.svg)](http://godoc.org/github.com/ajwerner/tdigestgo)
+[![Documentation](https://godoc.org/github.com/ajwerner/tdigest?status.svg)](http://godoc.org/github.com/ajwerner/tdigest)
 
 This is a concurrent go implementation of the t-digest data structure
 for streaming quantile estimation. The code implements the zero-allocation,

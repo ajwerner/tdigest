@@ -9,19 +9,6 @@ import (
 	"sync/atomic"
 )
 
-type centroid struct {
-	mean, count float64
-}
-
-const locked = math.MinInt64
-
-// Distribution provides read access to a float64 valued distribution by
-// quantile or by value.
-type Distribution interface {
-	ValueAt(q float64) (v float64)
-	QuantileOf(v float64) (q float64)
-}
-
 // TDigest approximates a distribution of floating point numbers.
 type TDigest struct {
 	config
@@ -41,23 +28,6 @@ type TDigest struct {
 	}
 }
 
-func (td *TDigest) Read(f func(d Distribution)) {
-	td.merge()
-	td.mu.RLock()
-	defer td.mu.RUnlock()
-	f((*readTDigest)(td))
-}
-
-type readTDigest TDigest
-
-func (rtd *readTDigest) ValueAt(q float64) float64 {
-	return (*TDigest)(rtd).valueAtRLocked(q)
-}
-
-func (rtd *readTDigest) QuantileOf(v float64) float64 {
-	return (*TDigest)(rtd).quantileOfRLocked(q)
-}
-
 // New creates a new TDigest.
 func New(options ...Option) *TDigest {
 	var td TDigest
@@ -72,8 +42,24 @@ func capFromCompression(compression float64) int {
 	return (6 * (int)(compression)) + 10
 }
 
-// Record records adds a value with a count of 1.
-func (td *TDigest) Record(mean float64) { td.Add(mean, 1) }
+// Distribution provides read access to a float64 valued distribution by
+// quantile or by value.
+type Distribution interface {
+	ValueAt(q float64) (v float64)
+	QuantileOf(v float64) (q float64)
+}
+
+// Read enables clients to perform a number of read operations
+func (td *TDigest) Read(f func(d Distribution)) {
+	td.compress()
+	td.mu.RLock()
+	defer td.mu.RUnlock()
+	f((*readTDigest)(td))
+}
+
+type centroid struct {
+	mean, count float64
+}
 
 func (td *TDigest) Add(mean, count float64) {
 	td.mu.RLock()
@@ -81,13 +67,16 @@ func (td *TDigest) Add(mean, count float64) {
 	td.centroids[td.getAddIndexRLocked()] = centroid{mean: mean, count: count}
 }
 
+// Record records adds a value with a count of 1.
+func (td *TDigest) Record(mean float64) { td.Add(mean, 1) }
+
 // Merge combines other into td.
 func (td *TDigest) Merge(other *TDigest) {
 	td.mu.Lock()
 	defer td.mu.Unlock()
 	other.mu.Lock()
 	defer other.mu.Unlock()
-	other.mergeLocked()
+	other.compressLocked()
 	totalCount := 0.0
 	for i := range other.centroids {
 		other.centroids[i].count -= totalCount
@@ -109,7 +98,7 @@ func (td *TDigest) getAddIndexRLocked() (r int) {
 			func() {
 				td.mu.RUnlock()
 				defer td.mu.RLock()
-				td.merge()
+				td.compress()
 				td.mu.Broadcast()
 			}()
 		} else {
@@ -124,34 +113,62 @@ func (td *TDigest) getAddIndexLocked() int {
 		if idx < len(td.centroids) {
 			return idx
 		}
-		td.mergeLocked()
+		td.compressLocked()
 	}
 }
 
-// TODO(ajwerner): optimize reading by storing CDF instead PDF
-
+// ValueAt returns the value of the quantile q.
+// If q is not in [0, 1], ValueAt will panic.
+// An empty TDigest will return 0.
 func (td *TDigest) ValueAt(q float64) (v float64) {
-	td.Read(func(d Distribution) {
-		v = d.ValueAt(q)
-	})
+	td.Read(func(d Distribution) { v = d.ValueAt(q) })
 	return v
 }
 
-func isVerySmall(v float64) bool {
-	return !(v > .000000001 || v < -.000000001)
+// QuantileOf returns the estimated quantile at which this value falls in the
+// distribution. If the v is smaller than any recorded value 0.0 will be
+// returned and if v is larger than any recorded value 1.0 will be returned.
+// An empty TDigest will return 0.0 for all values.
+func (td *TDigest) QuantileOf(v float64) (q float64) {
+	td.Read(func(d Distribution) { q = d.QuantileOf(v) })
+	return q
 }
 
 func (td *TDigest) quantileOfRLocked(v float64) float64 {
-	panic("not implemented")
+	if td.mu.numMerged == 0 {
+		return 0
+	}
+	merged := td.centroids[:td.mu.numMerged]
+	i := sort.Search(len(merged), func(i int) bool {
+		return merged[i].mean >= v
+	})
+	// Deal with the ends of the distribution.
+	if i == 0 {
+		return 0
+	}
+	if i+1 == len(merged) && v >= merged[i].mean {
+		return 1
+	}
+	k := merged[i-1].count
+	nr := merged[i]
+	nr.count -= k
+	nl := merged[i-1]
+	if i > 1 {
+		nl.count -= merged[i-2].count
+	}
+
+	delta := (nr.mean - nl.mean)
+	cost := ((nl.count / 2) + (nr.count / 2))
+	m := delta / cost
+	return (k + ((v - nl.mean) / m)) / merged[td.mu.numMerged-1].count
 }
 
 func (td *TDigest) valueAtRLocked(q float64) float64 {
 	if q < 0 || q > 1 {
 		panic(fmt.Errorf("invalid quantile %v", q))
 	}
-	// TODO: optimize this to be O(log(merged)) instead of O(merged)
 	if td.mu.numMerged == 0 {
-		return math.NaN()
+		return 0
 	}
 	merged := td.centroids[:td.mu.numMerged]
 	goal := q * merged[len(merged)-1].count
@@ -165,12 +182,10 @@ func (td *TDigest) valueAtRLocked(q float64) float64 {
 		n.count -= merged[i-1].count
 	}
 	deltaK := goal - k - (n.count / 2)
-	if n.count == 0 || isVerySmall(deltaK) {
-		return n.mean
-	}
 	right := deltaK > 0
-	beforeFirst, afterLast := !right && i == 0, right && (i+1) == td.mu.numMerged
-	if beforeFirst || afterLast {
+
+	// if before the first point or after the last point, return the current mean.
+	if !right && i == 0 || right && (i+1) == td.mu.numMerged {
 		return n.mean
 	}
 	var nl, nr centroid
@@ -192,30 +207,25 @@ func (td *TDigest) valueAtRLocked(q float64) float64 {
 	return m*x + nl.mean
 }
 
-func (td *TDigest) merge() {
+type readTDigest TDigest
+
+var _ Distribution = (*readTDigest)(nil)
+
+func (rtd *readTDigest) ValueAt(q float64) (v float64) {
+	return (*TDigest)(rtd).valueAtRLocked(q)
+}
+
+func (rtd *readTDigest) QuantileOf(v float64) (q float64) {
+	return (*TDigest)(rtd).quantileOfRLocked(v)
+}
+
+func (td *TDigest) compress() {
 	td.mu.Lock()
 	defer td.mu.Unlock()
-	td.mergeLocked()
-	assertCountsIncreasing(td.centroids[:td.mu.numMerged])
+	td.compressLocked()
 }
 
-func assertCountsIncreasing(c centroids) {
-	for i := range c[:len(c)-1] {
-		if c[i].count >= c[i+1].count {
-			panic(fmt.Errorf("count at %v %v <= %v %v %v", i, c[i], i+1, c[i+1], c))
-		}
-	}
-}
-
-func assertCountsNonZero(c centroids) {
-	for i := range c {
-		if c[i].count == 0 {
-			panic(fmt.Errorf("count at %v %v == 0", i, c[i]))
-		}
-	}
-}
-
-func (td *TDigest) mergeLocked() {
+func (td *TDigest) compressLocked() {
 	idx := int(atomic.LoadInt64(&td.unmergedIdx))
 	if idx > len(td.centroids) {
 		idx = len(td.centroids)

@@ -69,7 +69,7 @@ func checkAccuracy(t *testing.T, data []float64, h *TDigest) {
 		got := h.ValueAt(q)
 		avg := math.Abs((v + got) / 2)
 		errRatio := math.Abs(v-got) / avg
-		t.Logf("%.5f %.5f %.9v %16.9v\n", errRatio, q, v, got)
+		t.Logf("%.5f %.5f %.9v %16.9v %v\n", errRatio, q, v, got, h.QuantileOf(got))
 		qq := math.Abs(q - .5)
 		limit := 2.0
 		if qq > .4999 {

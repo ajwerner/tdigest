@@ -15,6 +15,8 @@ type centroid struct {
 
 const locked = math.MinInt64
 
+// Distribution provides read access to a float64 valued distribution by
+// quantile or by value.
 type Distribution interface {
 	ValueAt(q float64) (v float64)
 	QuantileOf(v float64) (q float64)
@@ -33,10 +35,9 @@ type TDigest struct {
 		sync.RWMutex
 		sync.Cond
 
-		// merged is the size of the prefix of centroid used for the merged sorted
-		// data.
-		numMerged   int
-		mergedCount float64
+		// numMerged is the size of the prefix of centroid used for the merged
+		// sorted data.
+		numMerged int
 	}
 }
 
@@ -54,9 +55,10 @@ func (rtd *readTDigest) ValueAt(q float64) float64 {
 }
 
 func (rtd *readTDigest) QuantileOf(v float64) float64 {
-	panic("not implemented")
+	return (*TDigest)(rtd).quantileOfRLocked(q)
 }
 
+// New creates a new TDigest.
 func New(options ...Option) *TDigest {
 	var td TDigest
 	defaultOptions.apply(&td.config)
@@ -70,6 +72,7 @@ func capFromCompression(compression float64) int {
 	return (6 * (int)(compression)) + 10
 }
 
+// Record records adds a value with a count of 1.
 func (td *TDigest) Record(mean float64) { td.Add(mean, 1) }
 
 func (td *TDigest) Add(mean, count float64) {
@@ -78,12 +81,18 @@ func (td *TDigest) Add(mean, count float64) {
 	td.centroids[td.getAddIndexRLocked()] = centroid{mean: mean, count: count}
 }
 
+// Merge combines other into td.
 func (td *TDigest) Merge(other *TDigest) {
 	td.mu.Lock()
 	defer td.mu.Unlock()
 	other.mu.Lock()
 	defer other.mu.Unlock()
 	other.mergeLocked()
+	totalCount := 0.0
+	for i := range other.centroids {
+		other.centroids[i].count -= totalCount
+		totalCount += other.centroids[i].count
+	}
 	perm := rand.Perm(other.mu.numMerged)
 	for _, i := range perm {
 		td.centroids[td.getAddIndexLocked()] = other.centroids[i]
@@ -114,9 +123,8 @@ func (td *TDigest) getAddIndexLocked() int {
 		idx := int(atomic.AddInt64(&td.unmergedIdx, 1)) - 1
 		if idx < len(td.centroids) {
 			return idx
-		} else {
-			td.mergeLocked()
 		}
+		td.mergeLocked()
 	}
 }
 
@@ -133,39 +141,51 @@ func isVerySmall(v float64) bool {
 	return !(v > .000000001 || v < -.000000001)
 }
 
+func (td *TDigest) quantileOfRLocked(v float64) float64 {
+	panic("not implemented")
+}
+
 func (td *TDigest) valueAtRLocked(q float64) float64 {
 	if q < 0 || q > 1 {
 		panic(fmt.Errorf("invalid quantile %v", q))
 	}
 	// TODO: optimize this to be O(log(merged)) instead of O(merged)
-	goal := q * td.mu.mergedCount
-	k := 0.0
-	i := 0
-	for i = 0; i < td.mu.numMerged-1; i++ {
-		if k+td.centroids[i].count > goal {
-			break
-		}
-		k += td.centroids[i].count
+	if td.mu.numMerged == 0 {
+		return math.NaN()
 	}
-	n := &td.centroids[i]
+	merged := td.centroids[:td.mu.numMerged]
+	goal := q * merged[len(merged)-1].count
+	i := sort.Search(len(merged), func(i int) bool {
+		return merged[i].count >= goal
+	})
+	n := merged[i]
+	k := 0.0
+	if i > 0 {
+		k = merged[i-1].count
+		n.count -= merged[i-1].count
+	}
 	deltaK := goal - k - (n.count / 2)
-	if isVerySmall(deltaK) {
+	if n.count == 0 || isVerySmall(deltaK) {
 		return n.mean
 	}
 	right := deltaK > 0
-	// At the very extremes
-	if (right && ((i + 1) == td.mu.numMerged)) || (!right && i == 0) {
+	beforeFirst, afterLast := !right && i == 0, right && (i+1) == td.mu.numMerged
+	if beforeFirst || afterLast {
 		return n.mean
 	}
-	var nl, nr *centroid
+	var nl, nr centroid
 	if right {
 		nl = n
-		nr = &td.centroids[i+1]
-		k += n.count / 2
+		nr = merged[i+1]
+		nr.count -= merged[i].count
+		k += nl.count / 2
 	} else {
-		nl = &td.centroids[i-1]
+		nl = merged[i-1]
+		if i > 1 {
+			nl.count -= merged[i-2].count
+		}
 		nr = n
-		k -= n.count / 2
+		k -= nr.count / 2
 	}
 	x := goal - k
 	m := (nr.mean - nl.mean) / ((nl.count / 2) + (nr.count / 2))
@@ -176,11 +196,12 @@ func (td *TDigest) merge() {
 	td.mu.Lock()
 	defer td.mu.Unlock()
 	td.mergeLocked()
+	assertCountsIncreasing(td.centroids[:td.mu.numMerged])
 }
 
 func assertCountsIncreasing(c centroids) {
-	for i := range c[:len(c)] {
-		if c[i].count <= c[i+1].count {
+	for i := range c[:len(c)-1] {
+		if c[i].count >= c[i+1].count {
 			panic(fmt.Errorf("count at %v %v <= %v %v %v", i, c[i], i+1, c[i+1], c))
 		}
 	}
@@ -200,21 +221,24 @@ func (td *TDigest) mergeLocked() {
 		idx = len(td.centroids)
 	}
 	centroids := td.centroids[:idx]
-	sort.Sort(centroids)
 	totalCount := 0.0
-	for i := 0; i < len(centroids); i++ {
+	for i := 0; i < td.mu.numMerged; i++ {
+		centroids[i].count -= totalCount
 		totalCount += centroids[i].count
 	}
-	denom := 2 * math.Pi * totalCount * math.Log(totalCount)
-	normalizer := td.compression / denom
+	for i := td.mu.numMerged; i < len(centroids); i++ {
+		totalCount += centroids[i].count
+	}
+	sort.Sort(centroids)
+	normalizer := td.scale.normalizer(td.compression, totalCount)
 	cur := 0
 	countSoFar := 0.0
 	for i := 1; i < len(centroids); i++ {
 		proposedCount := centroids[cur].count + centroids[i].count
-		z := proposedCount * normalizer
 		q0 := countSoFar / totalCount
 		q2 := (countSoFar + proposedCount) / totalCount
-		shouldAdd := z <= (q0*(1-q0)) && z <= (q2*(1-q2))
+		limit := totalCount * math.Min(td.scale.max(q0, normalizer), td.scale.max(q2, normalizer))
+		shouldAdd := proposedCount < limit
 		if shouldAdd {
 			centroids[cur].count += centroids[i].count
 			delta := centroids[i].mean - centroids[cur].mean
@@ -225,6 +249,7 @@ func (td *TDigest) mergeLocked() {
 			}
 		} else {
 			countSoFar += centroids[cur].count
+			centroids[cur].count = countSoFar
 			cur++
 			centroids[cur] = centroids[i]
 		}
@@ -232,9 +257,62 @@ func (td *TDigest) mergeLocked() {
 			centroids[i] = centroid{}
 		}
 	}
+	centroids[cur].count += countSoFar
 	td.mu.numMerged = cur + 1
-	td.mu.mergedCount = totalCount
 	atomic.StoreInt64(&td.unmergedIdx, int64(td.mu.numMerged))
+}
+
+type scaleFunc int
+
+const (
+	// k2 is the default scaleFunc.
+	k2 scaleFunc = iota
+)
+
+var scaleFuncs = []struct {
+	normalizer func(compression, totalCount float64) float64
+	k          func(q, normalizer float64) float64
+	q          func(k, normalizer float64) float64
+	max        func(q, normalizer float64) float64
+}{
+	k2: {
+		normalizer: func(compression, totalCount float64) float64 {
+			return compression / (4*math.Log(totalCount/compression) + 24)
+		},
+		k: func(q, normalizer float64) float64 {
+			if q < 1e-15 {
+				q = 1e-15
+			} else if q > 1-1e15 {
+				q = 1 - 1e15
+			}
+
+			fmt.Println(math.Log(1/(1-q)) * normalizer)
+			return math.Log(1/(1-q)) * normalizer
+		},
+		q: func(k, normalizer float64) float64 {
+			w := math.Exp(k / normalizer)
+			return w / (1 + w)
+		},
+		max: func(q, normalizer float64) float64 {
+			return q * (1 - q) / normalizer
+		},
+	},
+}
+
+func (sf scaleFunc) normalizer(compression, totalCount float64) float64 {
+	return scaleFuncs[sf].normalizer(compression, totalCount)
+}
+
+func (sf scaleFunc) k(q, normalizer float64) float64 {
+	return scaleFuncs[sf].k(q, normalizer)
+}
+
+func (sf scaleFunc) q(k, normalizer float64) float64 {
+	return scaleFuncs[sf].q(k, normalizer)
+}
+
+func (sf scaleFunc) max(k, normalizer float64) float64 {
+	return scaleFuncs[sf].max(k, normalizer)
 }
 
 type centroids []centroid
@@ -255,6 +333,7 @@ func (c centroids) Swap(i, j int)      { c[i], c[j] = c[j], c[i] }
 
 type config struct {
 	compression float64
+	scale       scaleFunc
 }
 
 type Option interface {
@@ -271,6 +350,12 @@ func Compression(compression float64) Option {
 	})
 }
 
+func scale(sf scaleFunc) Option {
+	return optionFunc(func(cfg *config) {
+		cfg.scale = sf
+	})
+}
+
 type optionList []Option
 
 func (l optionList) apply(cfg *config) {
@@ -279,4 +364,7 @@ func (l optionList) apply(cfg *config) {
 	}
 }
 
-var defaultOptions = Compression(128)
+var defaultOptions = optionList{
+	Compression(128),
+	scale(k2),
+}

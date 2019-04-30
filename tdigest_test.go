@@ -7,12 +7,7 @@ import (
 	"strconv"
 	"sync"
 	"testing"
-	"time"
 )
-
-func init() {
-	rand.Seed(time.Now().UnixNano())
-}
 
 func TestTDigest(t *testing.T) {
 	h := New(Compression(123))
@@ -74,12 +69,21 @@ func checkAccuracy(t *testing.T, data []float64, h *TDigest) {
 		got := h.ValueAt(q)
 		avg := math.Abs((v + got) / 2)
 		errRatio := math.Abs(v-got) / avg
-		t.Logf("%.5f %v %v %v\n", errRatio, q, v, got)
-		limit := 0.5
-		if q < .1 || q > .9 {
+		t.Logf("%.5f %.5f %.9v %16.9v\n", errRatio, q, v, got)
+		qq := math.Abs(q - .5)
+		limit := 2.0
+		if qq > .4999 {
+			limit = .01
+		} else if qq > .49 {
 			limit = .1
+		} else if qq > .4 {
+			limit = .2
+		} else if limit > .3 {
+			limit = .4
+		} else if limit > .2 {
+			limit = .5
 		}
-		if errRatio > limit && avg > .1 {
+		if errRatio > limit && avg > .1 && math.Abs(got-avg) > .001 {
 			t.Errorf("Got error %v for q %v (%v vs %v)",
 				errRatio, q, v, got)
 		}

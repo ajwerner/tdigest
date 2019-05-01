@@ -60,16 +60,16 @@ func capFromCompression(compression float64) int {
 	return (6 * (int)(compression))
 }
 
-// Distribution provides read access to a float64 valued distribution by
+// Sketch provides read access to a float64 valued distribution by
 // quantile or by value.
-type Distribution interface {
+type Sketch interface {
 	TotalCount() float64
 	ValueAt(q float64) (v float64)
 	QuantileOf(v float64) (q float64)
 }
 
 // Read enables clients to perform a number of read operations
-func (td *TDigest) Read(f func(d Distribution)) {
+func (td *TDigest) Read(f func(d Sketch)) {
 	td.compress()
 	td.mu.RLock()
 	defer td.mu.RUnlock()
@@ -78,7 +78,7 @@ func (td *TDigest) Read(f func(d Distribution)) {
 
 // TotalCount returns the total count that has been added to the TDigest.
 func (td *TDigest) TotalCount() (c float64) {
-	td.Read(func(d Distribution) { c = d.TotalCount() })
+	td.Read(func(d Sketch) { c = d.TotalCount() })
 	return c
 }
 
@@ -86,7 +86,7 @@ func (td *TDigest) TotalCount() (c float64) {
 // If q is not in [0, 1], ValueAt will panic.
 // An empty TDigest will return 0.
 func (td *TDigest) ValueAt(q float64) (v float64) {
-	td.Read(func(d Distribution) { v = d.ValueAt(q) })
+	td.Read(func(d Sketch) { v = d.ValueAt(q) })
 	return v
 }
 
@@ -95,7 +95,7 @@ func (td *TDigest) ValueAt(q float64) (v float64) {
 // returned and if v is larger than any recorded value 1.0 will be returned.
 // An empty TDigest will return 0.0 for all values.
 func (td *TDigest) QuantileOf(v float64) (q float64) {
-	td.Read(func(d Distribution) { q = d.QuantileOf(v) })
+	td.Read(func(d Sketch) { q = d.QuantileOf(v) })
 	return q
 }
 
@@ -201,7 +201,7 @@ func (td *TDigest) compressLocked() {
 
 type readTDigest TDigest
 
-var _ Distribution = (*readTDigest)(nil)
+var _ Sketch = (*readTDigest)(nil)
 
 func (rtd *readTDigest) ValueAt(q float64) (v float64) {
 	return (*TDigest)(rtd).valueAtRLocked(q)

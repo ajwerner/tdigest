@@ -54,12 +54,6 @@ func New(options ...Option) *TDigest {
 	return &td
 }
 
-// capFromCompression uses a fixed size buffer of 6x compression.
-// TODO(ajwerner): make this configurable.
-func capFromCompression(compression float64) int {
-	return (6 * (int)(compression))
-}
-
 // Sketch provides read access to a float64 valued distribution by
 // quantile or by value.
 type Sketch interface {
@@ -279,6 +273,9 @@ func quantileOf(merged centroids, v float64) float64 {
 func compress(
 	cl centroids, compression float64, scale scaleFunc, numMerged int,
 ) (newNumMerged int) {
+	if len(cl) == 0 {
+		return
+	}
 	totalCount := 0.0
 	for i := 0; i < numMerged; i++ {
 		cl[i].count -= totalCount

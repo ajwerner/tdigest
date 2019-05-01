@@ -7,13 +7,15 @@ import (
 )
 
 func TestTDigest(t *testing.T) {
-	h := New(Compression(123))
-	h.Add(1, 1)
-	h.Add(2, 1)
-	if val := h.ValueAt(0); val != 1 {
+	td := New(Compression(123))
+	if td.ValueAt(1) != 0 {
+		t.Fatalf("failed to retreive value from empty TDigest, %v", td.ValueAt(1))
+	}
+	td.Add(1, 1)
+	td.Add(2, 1)
+	if val := td.ValueAt(0); val != 1 {
 		t.Fatalf("Unexpected quantile of large value: got %v, expected %v",
 			val, 1)
-
 	}
 }
 

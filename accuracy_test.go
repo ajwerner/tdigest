@@ -1,6 +1,7 @@
 package tdigest
 
 import (
+	"fmt"
 	"math"
 	"math/rand"
 	"sort"
@@ -25,25 +26,31 @@ func TestAccuracy(t *testing.T) {
 				})
 			},
 		} {
-			comp := Compression(128)
-			t.Run(dist+" "+order+" single", func(t *testing.T) {
-				shuffle(data)
-				h := New(comp)
-				addData(data, h)
-				checkAccuracy(t, data, h)
-			})
-			t.Run(dist+" "+order+" multi", func(t *testing.T) {
-				shuffle(data)
-				h1 := New(comp)
-				h2 := New(comp)
-				h3 := New(comp)
-				h4 := New(comp)
-				addData(data, h1, h2, h3, h4)
-				for _, h := range []*TDigest{h2, h3, h4} {
-					h1.Merge(h)
+			for _, useWeightLimit := range []bool{true, false} {
+				options := []Option{
+					Compression(128),
+					UseWeightLimit(useWeightLimit),
 				}
-				checkAccuracy(t, data, h1)
-			})
+				useString := fmt.Sprintf("_%v", useWeightLimit)
+				t.Run(dist+" "+order+" single"+useString, func(t *testing.T) {
+					shuffle(data)
+					h := New(options...)
+					addData(data, h)
+					checkAccuracy(t, data, h)
+				})
+				t.Run(dist+" "+order+" multi"+useString, func(t *testing.T) {
+					shuffle(data)
+					h1 := New(options...)
+					h2 := New(options...)
+					h3 := New(options...)
+					h4 := New(options...)
+					addData(data, h1, h2, h3, h4)
+					for _, h := range []*TDigest{h2, h3, h4} {
+						h1.Merge(h)
+					}
+					checkAccuracy(t, data, h1)
+				})
+			}
 		}
 	}
 }
@@ -88,7 +95,7 @@ var quantilesToCheck = []float64{
 	1,
 }
 
-const log = false
+const log = true
 
 func checkAccuracy(t *testing.T, data []float64, h *TDigest) {
 	sort.Float64s(data)

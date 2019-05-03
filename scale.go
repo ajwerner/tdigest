@@ -1,59 +1,41 @@
 package tdigest
 
-import (
-	"fmt"
-	"math"
-)
+import "math"
 
-type scaleFunc int
-
-const (
-	// k2 is the default scaleFunc.
-	k2 scaleFunc = iota
-)
-
-var scaleFuncs = []struct {
-	normalizer func(compression, totalCount float64) float64
-	k          func(q, normalizer float64) float64
-	q          func(k, normalizer float64) float64
-	max        func(q, normalizer float64) float64
-}{
-	k2: {
-		normalizer: func(compression, totalCount float64) float64 {
-			return compression / (4*math.Log(totalCount/compression) + 24)
-		},
-		k: func(q, normalizer float64) float64 {
-			if q < 1e-15 {
-				q = 1e-15
-			} else if q > 1-1e15 {
-				q = 1 - 1e15
-			}
-
-			fmt.Println(math.Log(1/(1-q)) * normalizer)
-			return math.Log(1/(1-q)) * normalizer
-		},
-		q: func(k, normalizer float64) float64 {
-			w := math.Exp(k / normalizer)
-			return w / (1 + w)
-		},
-		max: func(q, normalizer float64) float64 {
-			return q * (1 - q) / normalizer
-		},
-	},
+type scaleFunc interface {
+	normalizer(compression, totalCount float64) float64
+	k(q, normalizer float64) float64
+	q(k, normalizer float64) float64
+	max(q, normalizer float64) float64
 }
 
-func (sf scaleFunc) normalizer(compression, totalCount float64) float64 {
-	return scaleFuncs[sf].normalizer(compression, totalCount)
+type k2 struct{}
+
+func (_ k2) normalizer(compression, totalCount float64) float64 {
+	return compression/(4*math.Log(totalCount/compression)) + 24
 }
 
-func (sf scaleFunc) k(q, normalizer float64) float64 {
-	return scaleFuncs[sf].k(q, normalizer)
+func (_ k2) k(q, normalizer float64) float64 {
+	var isExtreme bool
+	if q < 1e-15 {
+		q = 1e-15
+		isExtreme = true
+	} else if q > (1 - 1e-15) {
+		q = 1 - 1e15
+		isExtreme = true
+	}
+	k := math.Log(q/(1-q)) * normalizer
+	if isExtreme {
+		k *= 2
+	}
+	return k
 }
 
-func (sf scaleFunc) q(k, normalizer float64) float64 {
-	return scaleFuncs[sf].q(k, normalizer)
+func (_ k2) q(k, normalizer float64) (ret float64) {
+	w := math.Exp(k / normalizer)
+	return w / (1 + w)
 }
 
-func (sf scaleFunc) max(k, normalizer float64) float64 {
-	return scaleFuncs[sf].max(k, normalizer)
+func (_ k2) max(q, normalizer float64) float64 {
+	return q * (1 - q) / normalizer
 }

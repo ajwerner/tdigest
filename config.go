@@ -14,6 +14,8 @@ type config struct {
 
 	// scale controls how weight is apportioned to centroids.
 	scale scaleFunc
+
+	useWeightLimit bool
 }
 
 func (cfg config) bufferSize() int {
@@ -35,6 +37,10 @@ func Compression(compression float64) Option {
 	return compressionOption(compression)
 }
 
+func UseWeightLimit(useWeightLimit bool) Option {
+	return weightLimitOption(useWeightLimit)
+}
+
 type bufferFactorOption int
 
 func (o bufferFactorOption) apply(cfg *config) { cfg.bufferFactor = int(o) }
@@ -43,14 +49,19 @@ type compressionOption float64
 
 func (o compressionOption) apply(cfg *config) { cfg.compression = float64(o) }
 
-type scaleOption scaleFunc
+type scaleOption struct{ scaleFunc }
 
-func (o scaleOption) apply(cfg *config) { cfg.scale = scaleFunc(o) }
+func (o scaleOption) apply(cfg *config) { cfg.scale = o.scaleFunc }
+
+type weightLimitOption bool
+
+func (o weightLimitOption) apply(cfg *config) { cfg.useWeightLimit = bool(o) }
 
 var defaultConfig = config{
-	compression:  128,
-	bufferFactor: 5,
-	scale:        k2,
+	compression:    128,
+	bufferFactor:   5,
+	scale:          scaleOption{k2{}},
+	useWeightLimit: false,
 }
 
 type optionList []Option

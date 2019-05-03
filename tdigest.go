@@ -24,8 +24,9 @@ import (
 //
 // The data structure does not allocates memory after its construction.
 type TDigest struct {
-	scale       scaleFunc
-	compression float64
+	scale          scaleFunc
+	compression    float64
+	useWeightLimit bool
 
 	// unmergedIdx is accessed with atomics.
 	unmergedIdx int64
@@ -51,6 +52,7 @@ func New(options ...Option) *TDigest {
 	td.centroids = make(centroids, cfg.bufferSize())
 	td.compression = cfg.compression
 	td.scale = cfg.scale
+	td.useWeightLimit = cfg.useWeightLimit
 	return &td
 }
 
@@ -189,7 +191,7 @@ func (td *TDigest) compressLocked() {
 	if idx > len(td.centroids) {
 		idx = len(td.centroids)
 	}
-	td.mu.numMerged = compress(td.centroids[:idx], td.compression, td.scale, td.mu.numMerged)
+	td.mu.numMerged = compress(td.centroids[:idx], td.compression, td.scale, td.mu.numMerged, td.useWeightLimit)
 	atomic.StoreInt64(&td.unmergedIdx, int64(td.mu.numMerged))
 }
 
@@ -271,7 +273,7 @@ func quantileOf(merged centroids, v float64) float64 {
 }
 
 func compress(
-	cl centroids, compression float64, scale scaleFunc, numMerged int,
+	cl centroids, compression float64, scale scaleFunc, numMerged int, useWeightLimit bool,
 ) (newNumMerged int) {
 	if len(cl) == 0 {
 		return
@@ -288,13 +290,24 @@ func compress(
 	normalizer := scale.normalizer(compression, totalCount)
 	cur := 0
 	countSoFar := 0.0
+	var k1, scaleLimit float64 // for use with scale scaleLimitit
+	if !useWeightLimit {
+		k1 = scale.k(0, normalizer)
+		scaleLimit = totalCount * scale.q(k1+1, normalizer)
+	}
 	for i := 1; i < len(cl); i++ {
 		proposedCount := cl[cur].count + cl[i].count
-		q0 := countSoFar / totalCount
-		q2 := (countSoFar + proposedCount) / totalCount
-		probDensity := math.Min(scale.max(q0, normalizer), scale.max(q2, normalizer))
-		limit := totalCount * probDensity
-		shouldAdd := proposedCount < limit
+		var shouldAdd bool
+		if useWeightLimit {
+			q0 := countSoFar / totalCount
+			q2 := (countSoFar + proposedCount) / totalCount
+			probDensity := math.Min(scale.max(q0, normalizer), scale.max(q2, normalizer))
+			limit := totalCount * probDensity
+			shouldAdd = proposedCount < limit
+		} else /* useScaleLimit */ {
+			shouldAdd = countSoFar+proposedCount <= scaleLimit
+
+		}
 		if shouldAdd {
 			cl[cur].count += cl[i].count
 			delta := cl[i].mean - cl[cur].mean
@@ -307,6 +320,10 @@ func compress(
 			cl[cur].count = countSoFar
 			cur++
 			cl[cur] = cl[i]
+			if !useWeightLimit {
+				k1 = scale.k(countSoFar/totalCount, normalizer)
+				scaleLimit = totalCount * scale.q(k1+1, normalizer)
+			}
 		}
 		if cur != i {
 			cl[i] = centroid{}

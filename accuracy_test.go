@@ -10,7 +10,7 @@ import (
 )
 
 func TestAccuracy(t *testing.T) {
-	const N = 10000
+	const N = 1000
 	for dist, f := range map[string]accuracyTest{
 		"uniform":     rand.Float64,
 		"normal":      rand.NormFloat64,
@@ -34,18 +34,18 @@ func TestAccuracy(t *testing.T) {
 				useString := fmt.Sprintf("_%v", useWeightLimit)
 				t.Run(dist+" "+order+" single"+useString, func(t *testing.T) {
 					shuffle(data)
-					h := New(options...)
+					h := NewConcurrent(options...)
 					addData(data, h)
 					checkAccuracy(t, data, h)
 				})
 				t.Run(dist+" "+order+" multi"+useString, func(t *testing.T) {
 					shuffle(data)
-					h1 := New(options...)
-					h2 := New(options...)
-					h3 := New(options...)
-					h4 := New(options...)
+					h1 := NewConcurrent(options...)
+					h2 := NewConcurrent(options...)
+					h3 := NewConcurrent(options...)
+					h4 := NewConcurrent(options...)
 					addData(data, h1, h2, h3, h4)
-					for _, h := range []*TDigest{h2, h3, h4} {
+					for _, h := range []*Concurrent{h2, h3, h4} {
 						h1.Merge(h)
 					}
 					checkAccuracy(t, data, h1)
@@ -97,7 +97,7 @@ var quantilesToCheck = []float64{
 
 const log = true
 
-func checkAccuracy(t *testing.T, data []float64, h *TDigest) {
+func checkAccuracy(t *testing.T, data []float64, h *Concurrent) {
 	sort.Float64s(data)
 	N := float64(len(data))
 	// check accurracy
@@ -127,14 +127,17 @@ func checkAccuracy(t *testing.T, data []float64, h *TDigest) {
 				errRatio, q, v, got)
 		}
 	}
+	if log {
+		t.Logf("%v\n", h)
+	}
 }
 
-func addData(data []float64, hists ...*TDigest) {
+func addData(data []float64, hists ...*Concurrent) {
 	const concurrency = 100
 
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, concurrency)
-	add := func(h *TDigest, v float64) {
+	add := func(h *Concurrent, v float64) {
 		h.Record(v)
 		<-sem
 		wg.Done()

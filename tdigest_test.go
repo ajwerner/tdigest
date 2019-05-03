@@ -7,7 +7,7 @@ import (
 )
 
 func TestTDigest(t *testing.T) {
-	td := New(Compression(123))
+	td := NewConcurrent(Compression(123))
 	if td.ValueAt(1) != 0 {
 		t.Fatalf("failed to retreive value from empty TDigest, %v", td.ValueAt(1))
 	}
@@ -21,13 +21,23 @@ func TestTDigest(t *testing.T) {
 
 func BenchmarkAdd(b *testing.B) {
 	for _, size := range []int{10, 100, 200, 500, 1000, 5000, 10000, 50000} {
-		b.Run(strconv.Itoa(size), benchmarkAddSize(size))
+		newSketch := func() Sketch { return New(Compression(float64(size))) }
+		b.Run(strconv.Itoa(size), benchmarkAddSize(newSketch, size))
 	}
 }
 
-func benchmarkAddSize(size int) func(*testing.B) {
+func BenchmarkConcurrentAdd(b *testing.B) {
+	for _, size := range []int{10, 100, 200, 500, 1000, 5000, 10000, 50000} {
+		newSketch := func() Sketch {
+			return NewConcurrent(Compression(float64(size)))
+		}
+		b.Run(strconv.Itoa(size), benchmarkAddSize(newSketch, size))
+	}
+}
+
+func benchmarkAddSize(newSketch func() Sketch, size int) func(*testing.B) {
 	return func(b *testing.B) {
-		h := New(Compression(float64(size)))
+		h := newSketch()
 		data := make([]float64, 0, b.N)
 		for i := 0; i < b.N; i++ {
 			data = append(data, rand.Float64())

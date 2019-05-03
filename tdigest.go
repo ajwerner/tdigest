@@ -3,215 +3,85 @@
 package tdigest
 
 import (
-	"fmt"
 	"math"
-	"math/rand"
 	"sort"
-	"sync"
-	"sync/atomic"
 )
 
-// TDigest approximates a distribution of floating point numbers.
-// All methods are safe to be called concurrently.
-//
-// Design
-//
-// The data structure is designed to maintain most of its state in a single
-// slice
-// The total in-memory size of a TDigest is
-//
-//    (1+BufferFactor)*(int(Compression)+1)
-//
-// The data structure does not allocates memory after its construction.
-type TDigest struct {
-	scale          scaleFunc
-	compression    float64
-	useWeightLimit bool
-
-	// unmergedIdx is accessed with atomics.
-	unmergedIdx int64
-
-	centroids centroids
-
-	mu struct {
-		sync.RWMutex
-		sync.Cond
-
-		// numMerged is the size of the prefix of centroid used for the merged
-		// sorted data.
-		numMerged int
-	}
-}
-
-// New creates a new TDigest.
-func New(options ...Option) *TDigest {
-	cfg := defaultConfig
-	optionList(options).apply(&cfg)
-	var td TDigest
-	td.mu.L = td.mu.RLocker()
-	td.centroids = make(centroids, cfg.bufferSize())
-	td.compression = cfg.compression
-	td.scale = cfg.scale
-	td.useWeightLimit = cfg.useWeightLimit
-	return &td
-}
-
-// Sketch provides read access to a float64 valued distribution by
-// quantile or by value.
+// Sketch is an
 type Sketch interface {
+	Reader
+	Add(mean, count float64)
+}
+
+// Reader provides read access to a float64 valued distribution by
+// quantile or by value.
+type Reader interface {
 	TotalCount() float64
 	ValueAt(q float64) (v float64)
 	QuantileOf(v float64) (q float64)
-}
-
-// Read enables clients to perform a number of read operations
-func (td *TDigest) Read(f func(d Sketch)) {
-	td.compress()
-	td.mu.RLock()
-	defer td.mu.RUnlock()
-	f((*readTDigest)(td))
-}
-
-// TotalCount returns the total count that has been added to the TDigest.
-func (td *TDigest) TotalCount() (c float64) {
-	td.Read(func(d Sketch) { c = d.TotalCount() })
-	return c
-}
-
-// ValueAt returns the value of the quantile q.
-// If q is not in [0, 1], ValueAt will panic.
-// An empty TDigest will return 0.
-func (td *TDigest) ValueAt(q float64) (v float64) {
-	td.Read(func(d Sketch) { v = d.ValueAt(q) })
-	return v
-}
-
-// QuantileOf returns the estimated quantile at which this value falls in the
-// distribution. If the v is smaller than any recorded value 0.0 will be
-// returned and if v is larger than any recorded value 1.0 will be returned.
-// An empty TDigest will return 0.0 for all values.
-func (td *TDigest) QuantileOf(v float64) (q float64) {
-	td.Read(func(d Sketch) { q = d.QuantileOf(v) })
-	return q
 }
 
 type centroid struct {
 	mean, count float64
 }
 
-// Add adds the provided data to the TDigest.
+type TDigest struct {
+	scale          scaleFunc
+	compression    float64
+	useWeightLimit bool
+
+	centroids   []centroid
+	numMerged   int
+	unmergedIdx int
+}
+
+// New creates a new Concurrent.
+func New(options ...Option) *TDigest {
+	cfg := defaultConfig
+	optionList(options).apply(&cfg)
+	var td TDigest
+	td.centroids = make([]centroid, cfg.bufferSize())
+	td.compression = cfg.compression
+	td.scale = cfg.scale
+	td.useWeightLimit = cfg.useWeightLimit
+	return &td
+}
+
+func (td *TDigest) ValueAt(q float64) (v float64) {
+	td.compress()
+	return valueAt(td.centroids[:td.numMerged], v)
+}
+
+// QuantileOf returns the estimated quantile at which this value falls in the
+// distribution. If the v is smaller than any recorded value 0.0 will be
+// returned and if v is larger than any recorded value 1.0 will be returned.
+// An empty Concurrent will return 0.0 for all values.
+func (td *TDigest) QuantileOf(v float64) (q float64) {
+	td.compress()
+	return quantileOf(td.centroids[:td.numMerged], v)
+}
+
+func (td *TDigest) TotalCount() (c float64) {
+	td.compress()
+	return totalCount(td.centroids[:td.numMerged])
+}
+
 func (td *TDigest) Add(mean, count float64) {
-	td.mu.RLock()
-	defer td.mu.RUnlock()
-	td.centroids[td.getAddIndexRLocked()] = centroid{mean: mean, count: count}
-}
-
-// Record records adds a value with a count of 1.
-func (td *TDigest) Record(mean float64) { td.Add(mean, 1) }
-
-// Merge combines other into td.
-func (td *TDigest) Merge(other *TDigest) {
-	td.mu.Lock()
-	defer td.mu.Unlock()
-	other.mu.Lock()
-	defer other.mu.Unlock()
-	other.compressLocked()
-	totalCount := 0.0
-	for i := range other.centroids {
-		other.centroids[i].count -= totalCount
-		totalCount += other.centroids[i].count
+	if td.unmergedIdx == len(td.centroids) {
+		td.compress()
 	}
-	perm := rand.Perm(other.mu.numMerged)
-	for _, i := range perm {
-		td.centroids[td.getAddIndexLocked()] = other.centroids[i]
-	}
-}
-
-func (td *TDigest) getAddIndexRLocked() (r int) {
-	for {
-		idx := int(atomic.AddInt64(&td.unmergedIdx, 1))
-		idx--
-		if idx < len(td.centroids) {
-			return idx
-		} else if idx == len(td.centroids) {
-			func() {
-				td.mu.RUnlock()
-				defer td.mu.RLock()
-				td.compress()
-				td.mu.Broadcast()
-			}()
-		} else {
-			td.mu.Wait()
-		}
-	}
-}
-
-func (td *TDigest) getAddIndexLocked() int {
-	for {
-		idx := int(atomic.AddInt64(&td.unmergedIdx, 1)) - 1
-		if idx < len(td.centroids) {
-			return idx
-		}
-		td.compressLocked()
-	}
-}
-
-func (td *TDigest) quantileOfRLocked(v float64) float64 {
-	if td.mu.numMerged == 0 {
-		return 0
-	}
-	return quantileOf(td.centroids[:td.mu.numMerged], v)
-}
-
-func (td *TDigest) valueAtRLocked(q float64) float64 {
-	if q < 0 || q > 1 {
-		panic(fmt.Errorf("invalid quantile %v", q))
-	}
-	if td.mu.numMerged == 0 {
-		return 0
-	}
-	return valueAt(td.centroids[:td.mu.numMerged], q)
-}
-
-func (td *TDigest) totalCountRLocked() float64 {
-	if td.mu.numMerged == 0 {
-		return 0.0
-	}
-	return td.centroids[td.mu.numMerged-1].count
+	td.centroids[td.unmergedIdx] = centroid{mean: mean, count: count}
+	td.unmergedIdx++
 }
 
 func (td *TDigest) compress() {
-	td.mu.Lock()
-	defer td.mu.Unlock()
-	td.compressLocked()
+	td.numMerged = compress(td.centroids[:td.unmergedIdx], td.compression, td.scale, td.numMerged, td.useWeightLimit)
+	td.unmergedIdx = td.numMerged
 }
 
-func (td *TDigest) compressLocked() {
-	idx := int(atomic.LoadInt64(&td.unmergedIdx))
-	if idx > len(td.centroids) {
-		idx = len(td.centroids)
-	}
-	td.mu.numMerged = compress(td.centroids[:idx], td.compression, td.scale, td.mu.numMerged, td.useWeightLimit)
-	atomic.StoreInt64(&td.unmergedIdx, int64(td.mu.numMerged))
-}
+func (td *TDigest) Record(mean float64) { td.Add(mean, 1) }
 
-type readTDigest TDigest
-
-var _ Sketch = (*readTDigest)(nil)
-
-func (rtd *readTDigest) ValueAt(q float64) (v float64) {
-	return (*TDigest)(rtd).valueAtRLocked(q)
-}
-
-func (rtd *readTDigest) QuantileOf(v float64) (q float64) {
-	return (*TDigest)(rtd).quantileOfRLocked(v)
-}
-
-func (rtd *readTDigest) TotalCount() (c float64) {
-	return (*TDigest)(rtd).totalCountRLocked()
-}
-
-func valueAt(merged centroids, q float64) float64 {
+func valueAt(merged []centroid, q float64) float64 {
 	goal := q * merged[len(merged)-1].count
 	i := sort.Search(len(merged), func(i int) bool {
 		return merged[i].count >= goal
@@ -248,7 +118,7 @@ func valueAt(merged centroids, q float64) float64 {
 	return m*x + nl.mean
 }
 
-func quantileOf(merged centroids, v float64) float64 {
+func quantileOf(merged []centroid, v float64) float64 {
 	i := sort.Search(len(merged), func(i int) bool {
 		return merged[i].mean >= v
 	})
@@ -272,11 +142,21 @@ func quantileOf(merged centroids, v float64) float64 {
 	return (k + ((v - nl.mean) / m)) / merged[len(merged)-1].count
 }
 
+func totalCount(merged []centroid) float64 {
+	if len(merged) == 0 {
+		return 0.0
+	}
+	return merged[len(merged)-1].count
+}
+
 func compress(
-	cl centroids, compression float64, scale scaleFunc, numMerged int, useWeightLimit bool,
+	cl []centroid, compression float64, scale scaleFunc, numMerged int, useWeightLimit bool,
 ) (newNumMerged int) {
 	if len(cl) == 0 {
-		return
+		return 0
+	}
+	if numMerged == len(cl) {
+		return numMerged
 	}
 	totalCount := 0.0
 	for i := 0; i < numMerged; i++ {
@@ -286,7 +166,7 @@ func compress(
 	for i := numMerged; i < len(cl); i++ {
 		totalCount += cl[i].count
 	}
-	sort.Sort(cl)
+	sort.Sort(centroids(cl))
 	normalizer := scale.normalizer(compression, totalCount)
 	cur := 0
 	countSoFar := 0.0

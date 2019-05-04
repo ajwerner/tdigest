@@ -46,5 +46,6 @@ func benchmarkAddSize(newSketch func() Sketch, size int) func(*testing.B) {
 		for _, v := range data {
 			h.Add(v, 1)
 		}
+		b.SetBytes(8)
 	}
 }

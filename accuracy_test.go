@@ -10,7 +10,7 @@ import (
 )
 
 func TestAccuracy(t *testing.T) {
-	const N = 1000
+	const N = 100000
 	for dist, f := range map[string]accuracyTest{
 		"uniform":     rand.Float64,
 		"normal":      rand.NormFloat64,
@@ -30,6 +30,7 @@ func TestAccuracy(t *testing.T) {
 				options := []Option{
 					Compression(128),
 					UseWeightLimit(useWeightLimit),
+					BufferFactor(10),
 				}
 				useString := fmt.Sprintf("_%v", useWeightLimit)
 				t.Run(dist+" "+order+" single"+useString, func(t *testing.T) {
@@ -134,18 +135,40 @@ func checkAccuracy(t *testing.T, data []float64, h *Concurrent) {
 
 func addData(data []float64, hists ...*Concurrent) {
 	const concurrency = 100
-
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, concurrency)
-	add := func(h *Concurrent, v float64) {
-		h.Record(v)
-		<-sem
-		wg.Done()
-	}
-	wg.Add(len(data))
-	for _, d := range data {
-		sem <- struct{}{}
-		go add(hists[rand.Intn(len(hists))], d)
-	}
+	divide(len(data), concurrency, func(start, end int) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			add(hists[rand.Intn(len(hists))], data[start:end])
+		}()
+	})
 	wg.Wait()
+}
+
+// divide splits up n items into a specified number of parts which vary in size
+// by at most 1. For exmple say you have a slice you want split into p parts you
+// can write it as:
+//
+//   data, _ := ioutil.ReadAll(r)
+//   parts := make([][]byte, 0, p)
+//   divide(len(data), p, func(start, end int) {
+//     parts = append(parts, data[start:end])
+//   }
+//
+func divide(n, parts int, f func(start, end int)) {
+	start := 0
+	for i := 0; i < parts; i++ {
+		div := parts - i
+		res := (n + (div / 2)) / div
+		f(start, start+res)
+		start += res
+		n -= res
+	}
+}
+
+func add(h Sketch, data []float64) {
+	for _, v := range data {
+		h.Add(v, 1)
+	}
 }

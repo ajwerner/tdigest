@@ -13,4 +13,14 @@ a write needs only increment an atomic and write two floats to a buffer.
 Occasionlly, when the buffer fills, a caller will have to perform the merge
 operation.
 
-[histo.pdf]: https://github.com/tdunning/t-digest/raw/d7427ee41be6a6fd271206f26a0cad42f74f30bf/docs/t-digest-paper/histo.pdf
+[histo.pdf]: https://github.com/tdunning/t-digest/raw/d7427ee41be6a6fd271206f26a0cad42f74f30bf/docs/t-digest-paper/
+
+## TODOs
+
+- [ ] Provide encoding functionality
+- [ ] Benchmark against HDR Histogram
+- [ ] Evaluate accuracy against HDR Histogram at reasonable settings
+- [ ] Implement more scale functions
+   - [ ] k_3
+   - [ ] k_0 (uniform weight)
+- [ ] Describe use cases, comparisons, trade-offs

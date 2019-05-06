@@ -233,14 +233,6 @@ type centroids []centroid
 
 var _ sort.Interface = centroids(nil)
 
-func (c centroids) totalCount() float64 {
-	var sum float64
-	for i := range c {
-		sum += c[i].count
-	}
-	return sum
-}
-
 func (c centroids) Len() int           { return len(c) }
 func (c centroids) Less(i, j int) bool { return c[i].mean < c[j].mean }
 func (c centroids) Swap(i, j int)      { c[i], c[j] = c[j], c[i] }

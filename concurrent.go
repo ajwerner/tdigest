@@ -78,15 +78,22 @@ func (td *Concurrent) String() (s string) {
 
 // TotalCount returns the total count that has been added to the Concurrent.
 func (td *Concurrent) TotalCount() (c float64) {
-	td.Read(func(d Reader) { c = d.TotalCount() })
+	td.Read(func(r Reader) { c = r.TotalCount() })
 	return c
+}
+
+// TotalSum returns the approximation of the weighted sum of all values
+// recorded in to the sketch.
+func (td *Concurrent) TotalSum() (s float64) {
+	td.Read(func(r Reader) { s = r.TotalSum() })
+	return s
 }
 
 // ValueAt returns the value of the quantile q.
 // If q is not in [0, 1], ValueAt will panic.
 // An empty Concurrent will return 0.
 func (td *Concurrent) ValueAt(q float64) (v float64) {
-	td.Read(func(d Reader) { v = d.ValueAt(q) })
+	td.Read(func(r Reader) { v = r.ValueAt(q) })
 	return v
 }
 
@@ -95,7 +102,7 @@ func (td *Concurrent) ValueAt(q float64) (v float64) {
 // returned and if v is larger than any recorded value 1.0 will be returned.
 // An empty Concurrent will return 0.0 for all values.
 func (td *Concurrent) QuantileOf(v float64) (q float64) {
-	td.Read(func(d Reader) { q = d.QuantileOf(v) })
+	td.Read(func(r Reader) { q = r.QuantileOf(v) })
 	return q
 }
 
@@ -177,6 +184,10 @@ func (td *Concurrent) totalCountRLocked() float64 {
 	return totalCount(td.centroids[:td.mu.numMerged])
 }
 
+func (td *Concurrent) totalSumRLocked() float64 {
+	return totalSum(td.centroids[:td.mu.numMerged])
+}
+
 func (td *Concurrent) compress() {
 	td.mu.Lock()
 	defer td.mu.Unlock()
@@ -206,4 +217,8 @@ func (rtd *readConcurrent) QuantileOf(v float64) (q float64) {
 
 func (rtd *readConcurrent) TotalCount() (c float64) {
 	return (*Concurrent)(rtd).totalCountRLocked()
+}
+
+func (rtd *readConcurrent) TotalSum() float64 {
+	return (*Concurrent)(rtd).totalSumRLocked()
 }

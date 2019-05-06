@@ -17,6 +17,7 @@ type Sketch interface {
 // quantile or by value.
 type Reader interface {
 	TotalCount() float64
+	TotalSum() float64
 	ValueAt(q float64) (v float64)
 	QuantileOf(v float64) (q float64)
 }
@@ -74,6 +75,11 @@ func (td *TDigest) Add(mean, count float64) {
 	td.unmergedIdx++
 }
 
+func (td *TDigest) TotalSum() float64 {
+	td.compress()
+	return totalSum(td.centroids[:td.numMerged])
+}
+
 func (td *TDigest) compress() {
 	td.numMerged = compress(td.centroids[:td.unmergedIdx], td.compression, td.scale, td.numMerged, td.useWeightLimit)
 	td.unmergedIdx = td.numMerged
@@ -116,6 +122,16 @@ func valueAt(merged []centroid, q float64) float64 {
 	x := goal - k
 	m := (nr.mean - nl.mean) / ((nl.count / 2) + (nr.count / 2))
 	return m*x + nl.mean
+}
+
+func totalSum(merged []centroid) float64 {
+	var countSoFar float64
+	var sum float64
+	for i := range merged {
+		sum += (merged[i].count - countSoFar) * merged[i].mean
+		countSoFar += merged[i].count
+	}
+	return sum
 }
 
 func quantileOf(merged []centroid, v float64) float64 {

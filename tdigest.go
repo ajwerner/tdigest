@@ -124,16 +124,6 @@ func valueAt(merged []centroid, q float64) float64 {
 	return m*x + nl.mean
 }
 
-func totalSum(merged []centroid) float64 {
-	var countSoFar float64
-	var sum float64
-	for i := range merged {
-		sum += (merged[i].count - countSoFar) * merged[i].mean
-		countSoFar += merged[i].count
-	}
-	return sum
-}
-
 func quantileOf(merged []centroid, v float64) float64 {
 	i := sort.Search(len(merged), func(i int) bool {
 		return merged[i].mean >= v
@@ -163,6 +153,16 @@ func totalCount(merged []centroid) float64 {
 		return 0.0
 	}
 	return merged[len(merged)-1].count
+}
+
+func totalSum(merged []centroid) float64 {
+	var countSoFar float64
+	var sum float64
+	for i := range merged {
+		sum += (merged[i].count - countSoFar) * merged[i].mean
+		countSoFar += merged[i].count
+	}
+	return sum
 }
 
 func compress(
@@ -227,6 +227,12 @@ func compress(
 	}
 	cl[cur].count += countSoFar
 	return cur + 1
+}
+
+func decay(merged []centroid, factor float64) {
+	for i := range merged {
+		merged[i].count *= factor
+	}
 }
 
 type centroids []centroid

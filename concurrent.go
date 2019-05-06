@@ -116,6 +116,14 @@ func (td *Concurrent) Add(mean, count float64) {
 // Record records adds a value with a count of 1.
 func (td *Concurrent) Record(mean float64) { td.Add(mean, 1) }
 
+// Decay decreases the weight of all tracked centroids by factor.
+func (td *Concurrent) Decay(factor float64) {
+	td.mu.Lock()
+	defer td.mu.Unlock()
+	td.compressLocked()
+	decay(td.centroids[:td.mu.numMerged], factor)
+}
+
 // Merge combines other into td.
 func (td *Concurrent) Merge(other *Concurrent) {
 	td.mu.Lock()

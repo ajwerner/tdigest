@@ -25,13 +25,9 @@ type Concurrent struct {
 	scale          scaleFunc
 	compression    float64
 	useWeightLimit bool
-
 	// unmergedIdx is accessed with atomics.
 	unmergedIdx int64
-
-	centroids []centroid
-
-	mu struct {
+	mu          struct {
 		sync.RWMutex
 		sync.Cond
 
@@ -39,6 +35,8 @@ type Concurrent struct {
 		// sorted data.
 		numMerged int
 	}
+
+	centroids []centroid
 }
 
 // NewConcurrent creates a new Concurrent.
@@ -54,9 +52,18 @@ func NewConcurrent(options ...Option) *Concurrent {
 	return &td
 }
 
-// Read enables clients to perform a number of read operations
+// Read enables clients to perform a number of read operations on a snapshot
+// of the data.
 func (td *Concurrent) Read(f func(d Reader)) {
 	td.compress()
+	td.mu.RLock()
+	defer td.mu.RUnlock()
+	f((*readConcurrent)(td))
+}
+
+// Read enables clients to perform a number of read operations on a snapshot of
+// the data without forcing a compression of buffered data.
+func (td *Concurrent) ReadStale(f func(d Reader)) {
 	td.mu.RLock()
 	defer td.mu.RUnlock()
 	f((*readConcurrent)(td))

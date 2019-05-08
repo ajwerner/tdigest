@@ -129,10 +129,12 @@ func quantileOf(merged []centroid, v float64) float64 {
 		return merged[i].mean >= v
 	})
 	// Deal with the ends of the distribution.
-	if i == 0 {
+	switch {
+	case i == 0:
 		return 0
-	}
-	if i+1 == len(merged) && v >= merged[i].mean {
+	case i == len(merged):
+		return 1
+	case i+1 == len(merged) && v >= merged[i].mean:
 		return 1
 	}
 	k := merged[i-1].count

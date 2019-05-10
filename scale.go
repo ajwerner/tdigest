@@ -7,9 +7,12 @@ type scaleFunc interface {
 	k(q, normalizer float64) float64
 	q(k, normalizer float64) float64
 	max(q, normalizer float64) float64
+	String() string
 }
 
 type k2 struct{}
+
+func (f k2) String() string { return "k2" }
 
 func (f k2) normalizer(compression, totalCount float64) float64 {
 	return compression / f.z(compression, totalCount)

@@ -1,6 +1,9 @@
 package tdigest
 
-import "math"
+import (
+	"fmt"
+	"math"
+)
 
 type config struct {
 
@@ -44,18 +47,30 @@ func UseWeightLimit(useWeightLimit bool) Option {
 type bufferFactorOption int
 
 func (o bufferFactorOption) apply(cfg *config) { cfg.bufferFactor = int(o) }
+func (o bufferFactorOption) String() string {
+	return fmt.Sprintf("bufferFactor=%d", o)
+}
 
 type compressionOption float64
 
 func (o compressionOption) apply(cfg *config) { cfg.compression = float64(o) }
+func (o compressionOption) String() string {
+	return fmt.Sprintf("compression=%f", o)
+}
 
 type scaleOption struct{ scaleFunc }
 
 func (o scaleOption) apply(cfg *config) { cfg.scale = o.scaleFunc }
+func (o scaleOption) String() string {
+	return fmt.Sprintf("scale=%v", o.scaleFunc)
+}
 
 type weightLimitOption bool
 
 func (o weightLimitOption) apply(cfg *config) { cfg.useWeightLimit = bool(o) }
+func (o weightLimitOption) String() string {
+	return fmt.Sprintf("weightLimit=%v", bool(o))
+}
 
 var defaultConfig = config{
 	compression:    128,

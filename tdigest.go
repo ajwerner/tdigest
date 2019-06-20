@@ -232,8 +232,11 @@ func compress(
 }
 
 func decay(merged []centroid, factor float64) {
+	const verySmall = 1e-9
 	for i := range merged {
-		merged[i].count *= factor
+		if count := merged[i].count * factor; count > verySmall {
+			merged[i].count = count
+		}
 	}
 }
 

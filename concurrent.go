@@ -52,6 +52,13 @@ func NewConcurrent(options ...Option) *Concurrent {
 	return &td
 }
 
+func (td *Concurrent) clear() {
+	td.mu.Lock()
+	defer td.mu.Unlock()
+	atomic.StoreInt64(&td.unmergedIdx, 0)
+	td.mu.numMerged = 0
+}
+
 // Read enables clients to perform a number of read operations on a snapshot
 // of the data.
 func (td *Concurrent) Read(f func(d Reader)) {
@@ -61,8 +68,8 @@ func (td *Concurrent) Read(f func(d Reader)) {
 	f((*readConcurrent)(td))
 }
 
-// Read enables clients to perform a number of read operations on a snapshot of
-// the data without forcing a compression of buffered data.
+// ReadStale enables clients to perform a number of read operations on a
+// snapshot of the data without forcing a compression of buffered data.
 func (td *Concurrent) ReadStale(f func(d Reader)) {
 	td.mu.RLock()
 	defer td.mu.RUnlock()
@@ -150,18 +157,19 @@ func (td *Concurrent) Merge(other *Concurrent) {
 }
 
 func (td *Concurrent) getAddIndexRLocked() (r int) {
+	compress := func() {
+		td.mu.RUnlock()
+		defer td.mu.RLock()
+		td.compress()
+		td.mu.Broadcast()
+	}
 	for {
 		idx := int(atomic.AddInt64(&td.unmergedIdx, 1))
 		idx--
 		if idx < len(td.centroids) {
 			return idx
 		} else if idx == len(td.centroids) {
-			func() {
-				td.mu.RUnlock()
-				defer td.mu.RLock()
-				td.compress()
-				td.mu.Broadcast()
-			}()
+			compress()
 		} else {
 			td.mu.Wait()
 		}

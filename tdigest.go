@@ -3,6 +3,7 @@
 package tdigest
 
 import (
+	"fmt"
 	"math"
 	"sort"
 )
@@ -48,8 +49,18 @@ func New(options ...Option) *TDigest {
 	return &td
 }
 
+func (td *TDigest) clear() {
+	*td = TDigest{
+		scale:          td.scale,
+		compression:    td.compression,
+		useWeightLimit: td.useWeightLimit,
+		centroids:      td.centroids,
+	}
+}
+
 func (td *TDigest) ValueAt(q float64) (v float64) {
 	td.compress()
+	fmt.Println(td.centroids, td.numMerged)
 	return valueAt(td.centroids[:td.numMerged], v)
 }
 
@@ -65,6 +76,17 @@ func (td *TDigest) QuantileOf(v float64) (q float64) {
 func (td *TDigest) TotalCount() (c float64) {
 	td.compress()
 	return totalCount(td.centroids[:td.numMerged])
+}
+
+// Merge combines other into td.
+func (td *TDigest) Merge(other *TDigest) {
+	other.compress()
+	totalCount := 0.0
+	for i := range other.centroids[:other.numMerged] {
+		td.Add(other.centroids[i].mean, other.centroids[i].count-totalCount)
+		totalCount = other.centroids[i].count
+	}
+	td.compress()
 }
 
 func (td *TDigest) Add(mean, count float64) {
@@ -88,6 +110,9 @@ func (td *TDigest) compress() {
 func (td *TDigest) Record(mean float64) { td.Add(mean, 1) }
 
 func valueAt(merged []centroid, q float64) float64 {
+	if len(merged) == 0 {
+		return 0
+	}
 	goal := q * merged[len(merged)-1].count
 	i := sort.Search(len(merged), func(i int) bool {
 		return merged[i].count >= goal

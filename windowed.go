@@ -59,38 +59,50 @@ type Windowed struct {
 
 }
 
-// type digestRingBuf struct {
-// 	head    int32
-// 	len     int32
-// 	digests []*closedTDigest
-// }
+type digestRingBuf struct {
+	head    int32
+	len     int32
+	digests []*TDigest
+}
 
-// func (rb *digestRingBuf) back() *closedTDigest {
-// 	return rb.at(rb.len - 1)
-// }
+func (rb *digestRingBuf) back() *TDigest {
+	return rb.at(rb.len - 1)
+}
 
-// func (rb *digestRingBuf) at(idx int) *closedTDigest {
-// 	return rb.digests[(rb.head+rb.len)%len(rb.digests)]
-// }
+func (rb *digestRingBuf) at(idx int32) *TDigest {
+	return rb.digests[(rb.head+idx)%int32(len(rb.digests))]
+}
 
-// func (rb *digestRingBuf) pushFront(td *closedTDigest) {
-// 	if rb.full() {
-// 		panic("cannot push onto a full digest")
-// 	}
-// 	if rb.head--; rb.head < 0 {
-// 		rb.head += len(rb.digests)
-// 	}
-// 	rb.digests[rb.head] = td
-// }
+func (rb *digestRingBuf) pushFront(td *TDigest) {
+	if rb.full() {
+		panic("cannot push onto a full digest")
+	}
+	if rb.head--; rb.head < 0 {
+		rb.head += int32(len(rb.digests))
+	}
+	rb.digests[rb.head] = td
+	rb.len++
+}
 
-// func (rb *digestRingBuf) full() bool {
-// 	return rb.len == len(rb.digests)
-// }
+func (rb *digestRingBuf) popBack() *TDigest {
+	ret := rb.back()
+	rb.len--
+	return ret
+}
+
+func (rb *digestRingBuf) full() bool {
+	return rb.len == int32(len(rb.digests))
+}
+
+func (rb *digestRingBuf) forEach(f func(int32, *TDigest)) {
+	for i := int32(0); i < rb.len; i++ {
+		f(i, rb.at(i))
+	}
+}
 
 type level struct {
-	period  int
-	head    int
-	digests []*TDigest
+	period int
+	digestRingBuf
 }
 
 // NewWindowed returns a new Windowed TDigest.
@@ -103,29 +115,29 @@ func NewWindowed() *Windowed {
 	w.mu.levels = []level{
 		{
 			// (0-1)-(1-2)s
-			period:  1,
-			digests: makeDigests(1, size),
+			period:        1,
+			digestRingBuf: makeDigests(1, size),
 		},
 		{
 			// (0-2)-(2-4), (0-2)-(4-6), (0-2)-(6-8), (0-2)-(8-10)s
-			period:  2,
-			digests: makeDigests(4, size),
+			period:        2,
+			digestRingBuf: makeDigests(4, size),
 		},
 		{
-			period:  10,
-			digests: makeDigests(5, size),
+			period:        10,
+			digestRingBuf: makeDigests(5, size),
 		},
 		{
-			period:  60,
-			digests: makeDigests(4, size),
+			period:        60,
+			digestRingBuf: makeDigests(4, size),
 		},
 		{
-			period:  300,
-			digests: makeDigests(2, size),
+			period:        300,
+			digestRingBuf: makeDigests(2, size),
 		},
 		{
-			period:  900,
-			digests: makeDigests(1, size),
+			period:        900,
+			digestRingBuf: makeDigests(1, size),
 		},
 	}
 	w.mu.open = NewConcurrent(Compression(size), BufferFactor(10))
@@ -137,12 +149,17 @@ func NewWindowed() *Windowed {
 	return w
 }
 
-func makeDigests(n int, size int) []*TDigest {
-	ret := make([]*TDigest, 0, n)
+func makeDigests(n int, size int) digestRingBuf {
+	ret := digestRingBuf{
+		digests: make([]*TDigest, 0, n),
+	}
 	for i := 0; i < n; i++ {
-		ret = append(ret, New(Compression(float64(size)), BufferFactor(1)))
+		ret.digests = append(ret.digests,
+			New(Compression(float64(size)), BufferFactor(1)))
+		ret.len++
 	}
 	return ret
+
 }
 
 func (w *Windowed) AddAt(t time.Time, mean, count float64) {
@@ -152,7 +169,7 @@ func (w *Windowed) AddAt(t time.Time, mean, count float64) {
 		w.tickAtRLocked(t)
 	}
 	w.mu.open.Add(mean, count)
-	fmt.Printf("Add %v ticks: %v, mean: %v, count: %v: %v\n", t, w.mu.ticks, mean, count, w.stringRLocked(t))
+	// fmt.Printf("Add %v ticks: %v, mean: %v, count: %v: %v\n", t, w.mu.ticks, mean, count, w.stringRLocked(t))
 }
 
 func (w *Windowed) tickAtRLocked(t time.Time) {
@@ -171,7 +188,7 @@ func (w *Windowed) tickAtRLocked(t time.Time) {
 	}
 	for i := 0; i < ticksNeeded; i++ {
 		w.tickLocked()
-		fmt.Println("tick", w.mu.ticks, t, w.stringRLocked(w.mu.lastTick))
+		// fmt.Println("tick", w.mu.ticks, t, w.stringRLocked(w.mu.lastTick))
 	}
 }
 
@@ -191,24 +208,23 @@ func (w *Windowed) tickLocked() {
 	w.mu.open.clear()
 	for i := range w.mu.levels {
 		l := &w.mu.levels[i]
-		for _, d := range l.digests {
-			d.Merge(closed)
+		tail := l.popBack()
+		l.forEach(func(_ int32, td *TDigest) {
+			td.Merge(closed)
+		})
+		l.pushFront(closed)
+		var next *level
+		if i+1 < len(w.mu.levels) {
+			next = &w.mu.levels[i+1]
 		}
-		needsTick := w.mu.ticks%(l.period) == 0
-		// This assumes that if a level does not tick then a higher level cannot
-		// either.
-		if !needsTick {
+		tickNext := next != nil && w.mu.ticks%next.period == 0
+		if tickNext {
+			tail.Merge(closed)
+		}
+		closed = tail
+		if !tickNext {
 			break
 		}
-		curTail := l.head - 1
-		if curTail < 0 {
-			curTail = len(l.digests) - 1
-		}
-		toDiscard := l.digests[curTail]
-		l.head = curTail
-		//fmt.Println("set head", l.head, "of level", i, "to", closed)
-		l.digests[l.head] = closed
-		closed = toDiscard
 	}
 	closed.clear()
 	w.mu.spare = closed
@@ -230,12 +246,12 @@ func (w *Windowed) stringRLocked(now time.Time) string {
 	fmt.Fprintf(&buf, "\tnow (0-%v): %v %v\n", now.Sub(w.mu.lastTick), w.mu.open.String(), tc)
 	for i := range w.mu.levels {
 		l := &w.mu.levels[i]
-		offset := curDur + w.tickInterval*time.Duration(w.mu.ticks%(l.period+1))
-		for j, d := range l.digests {
-			dur := offset + w.tickInterval*time.Duration((j+1)*l.period)
-			d.compress()
-			fmt.Fprintf(&buf, "\t%v,%v: (%v-%v): %v\n", i, j, offset, dur, d)
-		}
+		offset := curDur + w.tickInterval*time.Duration(w.mu.ticks%(l.period))
+		l.forEach(func(j int32, td *TDigest) {
+			dur := offset + w.tickInterval*time.Duration(j+1)*time.Duration(l.period)
+			td.compress()
+			fmt.Fprintf(&buf, "\t%v,%v: (%v-%v): %v\n", i, j, offset, dur, td)
+		})
 	}
 	return buf.String()
 }
@@ -255,44 +271,51 @@ func (w *Windowed) Reader(f func(WindowedReader)) {
 }
 
 func (w *windowedReader) Reader(trailing time.Duration) (last time.Duration, r Reader) {
+	// we want to find the bucket which contains this time window
+	// and then fill it in below.
+	// TODO(ajwerner): optimize the reader behavior to just accumulate
+	// the indexes and do a single merge pass into the buffer.
 	w.mu.mergeBuf.clear()
-	var d time.Duration
-
-	// I feel like I should just "hard-code" some values
-
-	// ticks := int(trailing / w.tickInterval)
-	// we want to add all of the
-	// for i := 0; i < len(w.levels); i++ {
-	// 	l := &w.mu.levels[i]
-	// 	if l.period*len(l.digests) > ticks {
-	// 		// we
-	// 	}
-	// 	// for each level we want to add the part that is represented in that level
-	// 	// that is not represented in the level above.
-
-	// }
-	for i := w.findLevel(trailing); i >= 0; i-- {
+	// First we work our way up the levels until we find the
+	// level that contains this time period
+	//
+	// Then we work our way down to fill in the remainder
+	// now := NowFunc()
+	curDur := time.Duration(0) // now.Sub(w.mu.lastTick)
+	var i int
+	fmt.Println("reader", trailing, (*Windowed)(w).stringRLocked(w.mu.lastTick))
+	for i = 0; i < len(w.mu.levels); i++ {
 		l := &w.mu.levels[i]
-		d += w.tickInterval * time.Duration(l.period*len(l.digests))
-		totalCount := 0.0
-		digest := l.digests[(l.head+len(l.digests)-1)%len(l.digests)]
-		for _, c := range digest.centroids[:digest.numMerged] {
-			w.mu.mergeBuf.Add(c.mean, c.count-totalCount)
-			totalCount = c.count
+		bucketDur := w.tickInterval * time.Duration(l.period)
+		levelDur := bucketDur * time.Duration(len(l.digests)+1)
+		fmt.Println("up", i, levelDur, bucketDur, trailing)
+		if levelDur <= trailing {
+			continue
 		}
+		offset := w.tickInterval * time.Duration(w.mu.ticks%l.period)
+		idx := int((trailing - offset) / bucketDur)
+		if (trailing-offset)%bucketDur == 0 {
+			idx--
+		}
+		trailing = offset
+		fmt.Println("at", i, idx, levelDur, bucketDur, trailing, offset)
+		w.mu.mergeBuf.Merge(l.at(int32(idx)))
+		last = offset + time.Duration(idx+1)*bucketDur
+		break
 	}
-	w.mu.mergeBuf.compress()
-	return d, w.mu.mergeBuf
-}
-
-func (w *windowedReader) findLevel(trailing time.Duration) int {
-	for i := len(w.mu.levels) - 1; i >= 0; i-- {
+	for ; i >= 0 && trailing > curDur; i-- {
 		l := &w.mu.levels[i]
-		if w.tickInterval*time.Duration(l.period*len(l.digests)) < trailing {
-			return i
+		bucketDur := w.tickInterval * time.Duration(l.period)
+		offset := int(trailing / bucketDur)
+		fmt.Println("down", i, offset, bucketDur, trailing)
+		if offset == len(l.digests) {
+			offset--
 		}
+		trailing = curDur + w.tickInterval*time.Duration(w.mu.ticks%(l.period))
 	}
-	return 0
+	// TODO(ajwerner): deal with adding cur
+	fmt.Println(last, w.mu.mergeBuf)
+	return last, w.mu.mergeBuf
 }
 
 //   ]

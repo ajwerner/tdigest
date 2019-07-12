@@ -192,7 +192,7 @@ func totalSum(merged []centroid) float64 {
 	var sum float64
 	for i := range merged {
 		sum += (merged[i].count - countSoFar) * merged[i].mean
-		countSoFar += merged[i].count
+		countSoFar = merged[i].count
 	}
 	return sum
 }

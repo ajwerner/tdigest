@@ -3,7 +3,6 @@
 package tdigest
 
 import (
-	"fmt"
 	"math"
 	"sort"
 )
@@ -49,6 +48,13 @@ func New(options ...Option) *TDigest {
 	return &td
 }
 
+func (td *TDigest) String() string {
+	// totalCount := td.TotalCount()
+	return readerString(td)
+	// return fmt.Sprintf("TDigest{mean: %f, count: %f, min: %f, max: %f}",
+	// 	td.TotalSum()/totalCount, totalCount, td.ValueAt(0), td.ValueAt(1))
+}
+
 func (td *TDigest) clear() {
 	*td = TDigest{
 		scale:          td.scale,
@@ -60,8 +66,7 @@ func (td *TDigest) clear() {
 
 func (td *TDigest) ValueAt(q float64) (v float64) {
 	td.compress()
-	fmt.Println(td.centroids, td.numMerged)
-	return valueAt(td.centroids[:td.numMerged], v)
+	return valueAt(td.centroids[:td.numMerged], q)
 }
 
 // QuantileOf returns the estimated quantile at which this value falls in the

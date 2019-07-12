@@ -33,10 +33,16 @@ func TestAccuracy(t *testing.T) {
 					BufferFactor(10),
 				}
 				useString := fmt.Sprintf("_%v", useWeightLimit)
+				t.Run(dist+" "+order+"  non_concurrent"+useString, func(t *testing.T) {
+					shuffle(data)
+					h := New(options...)
+					addData(1, data, h)
+					checkAccuracy(t, data, h)
+				})
 				t.Run(dist+" "+order+" single"+useString, func(t *testing.T) {
 					shuffle(data)
 					h := NewConcurrent(options...)
-					addData(data, h)
+					addData(100, data, h)
 					checkAccuracy(t, data, h)
 				})
 				t.Run(dist+" "+order+" multi"+useString, func(t *testing.T) {
@@ -45,7 +51,7 @@ func TestAccuracy(t *testing.T) {
 					h2 := NewConcurrent(options...)
 					h3 := NewConcurrent(options...)
 					h4 := NewConcurrent(options...)
-					addData(data, h1, h2, h3, h4)
+					addData(100, data, h1, h2, h3, h4)
 					for _, h := range []*Concurrent{h2, h3, h4} {
 						h1.Merge(h)
 					}
@@ -98,7 +104,7 @@ var quantilesToCheck = []float64{
 
 const log = true
 
-func checkAccuracy(t *testing.T, data []float64, h *Concurrent) {
+func checkAccuracy(t *testing.T, data []float64, h Sketch) {
 	sort.Float64s(data)
 	N := float64(len(data))
 	// check accurracy
@@ -108,7 +114,7 @@ func checkAccuracy(t *testing.T, data []float64, h *Concurrent) {
 		avg := math.Abs((v + got) / 2)
 		errRatio := math.Abs(v-got) / avg
 		if log {
-			t.Logf("%.5f %.5f %.9v %16.9v %v\n", errRatio, q, v, got, h.QuantileOf(got))
+			t.Logf("%.5f %.5f %.9v %16.9v (got) %v (quantilOf)\n", errRatio, q, v, got, h.QuantileOf(got))
 		}
 		qq := math.Abs(q - .5)
 		limit := 2.0
@@ -133,8 +139,7 @@ func checkAccuracy(t *testing.T, data []float64, h *Concurrent) {
 	}
 }
 
-func addData(data []float64, hists ...*Concurrent) {
-	const concurrency = 100
+func addData(concurrency int, data []float64, hists ...Sketch) {
 	var wg sync.WaitGroup
 	divide(len(data), concurrency, func(start, end int) {
 		wg.Add(1)

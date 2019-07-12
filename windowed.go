@@ -1,6 +1,8 @@
 package tdigest
 
 import (
+	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -100,10 +102,12 @@ func NewWindowed() *Windowed {
 	const size = 128
 	w.mu.levels = []level{
 		{
+			// (0-1)-(1-2)s
 			period:  1,
 			digests: makeDigests(1, size),
 		},
 		{
+			// (0-2)-(2-4), (0-2)-(4-6), (0-2)-(6-8), (0-2)-(8-10)s
 			period:  2,
 			digests: makeDigests(4, size),
 		},
@@ -148,6 +152,7 @@ func (w *Windowed) AddAt(t time.Time, mean, count float64) {
 		w.tickAtRLocked(t)
 	}
 	w.mu.open.Add(mean, count)
+	fmt.Printf("Add %v ticks: %v, mean: %v, count: %v: %v\n", t, w.mu.ticks, mean, count, w.stringRLocked(t))
 }
 
 func (w *Windowed) tickAtRLocked(t time.Time) {
@@ -166,8 +171,8 @@ func (w *Windowed) tickAtRLocked(t time.Time) {
 	}
 	for i := 0; i < ticksNeeded; i++ {
 		w.tickLocked()
+		fmt.Println("tick", w.mu.ticks, t, w.stringRLocked(w.mu.lastTick))
 	}
-	w.mu.lastTick = t
 }
 
 func (w *Windowed) tickLocked() {
@@ -175,6 +180,7 @@ func (w *Windowed) tickLocked() {
 	// It may also mean merging all of the current bottom level into a new
 	// digest for the next level which may need to happen recursively.
 	w.mu.ticks++
+	w.mu.lastTick = w.mu.lastTick.Add(w.tickInterval)
 	// Take the merged buf from the top and write it into the "spare"
 	w.mu.open.compress()
 	closed := w.mu.spare
@@ -188,7 +194,7 @@ func (w *Windowed) tickLocked() {
 		for _, d := range l.digests {
 			d.Merge(closed)
 		}
-		needsTick := w.mu.ticks%l.period == 0
+		needsTick := w.mu.ticks%(l.period) == 0
 		// This assumes that if a level does not tick then a higher level cannot
 		// either.
 		if !needsTick {
@@ -200,12 +206,38 @@ func (w *Windowed) tickLocked() {
 		}
 		toDiscard := l.digests[curTail]
 		l.head = curTail
-		// fmt.Println("set head", l.head, "of level", i, "to", closed)
+		//fmt.Println("set head", l.head, "of level", i, "to", closed)
 		l.digests[l.head] = closed
 		closed = toDiscard
 	}
 	closed.clear()
 	w.mu.spare = closed
+}
+
+var NowFunc = time.Now
+
+func (w *Windowed) String() string {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.stringRLocked(NowFunc())
+}
+
+func (w *Windowed) stringRLocked(now time.Time) string {
+	var buf strings.Builder
+	fmt.Fprintf(&buf, "Windowed{lastTick: %v\n", w.mu.lastTick)
+	curDur := now.Sub(w.mu.lastTick)
+	tc := w.mu.open.TotalCount()
+	fmt.Fprintf(&buf, "\tnow (0-%v): %v %v\n", now.Sub(w.mu.lastTick), w.mu.open.String(), tc)
+	for i := range w.mu.levels {
+		l := &w.mu.levels[i]
+		offset := curDur + w.tickInterval*time.Duration(w.mu.ticks%(l.period+1))
+		for j, d := range l.digests {
+			dur := offset + w.tickInterval*time.Duration((j+1)*l.period)
+			d.compress()
+			fmt.Fprintf(&buf, "\t%v,%v: (%v-%v): %v\n", i, j, offset, dur, d)
+		}
+	}
+	return buf.String()
 }
 
 type WindowedReader interface {
@@ -225,10 +257,14 @@ func (w *Windowed) Reader(f func(WindowedReader)) {
 func (w *windowedReader) Reader(trailing time.Duration) (last time.Duration, r Reader) {
 	w.mu.mergeBuf.clear()
 	var d time.Duration
+
+	// I feel like I should just "hard-code" some values
+
 	// ticks := int(trailing / w.tickInterval)
+	// we want to add all of the
 	// for i := 0; i < len(w.levels); i++ {
 	// 	l := &w.mu.levels[i]
-	// 	if l.period * len(l.digests) > ticks {
+	// 	if l.period*len(l.digests) > ticks {
 	// 		// we
 	// 	}
 	// 	// for each level we want to add the part that is represented in that level

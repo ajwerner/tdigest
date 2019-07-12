@@ -76,18 +76,21 @@ func (td *Concurrent) ReadStale(f func(d Reader)) {
 	f((*readConcurrent)(td))
 }
 
-func (td *Concurrent) String() (s string) {
-	td.mu.RLock()
-	defer td.mu.RUnlock()
+func readerString(r Reader) string {
+	tc := r.TotalCount()
+	return fmt.Sprintf("(%.4f-[%.4f %.4f %.4f]-%.4f) totalCount: %v, avg: %v",
+		r.ValueAt(0),
+		r.ValueAt(.25),
+		r.ValueAt(.5),
+		r.ValueAt(.75),
+		r.ValueAt(1),
+		r.TotalCount(),
+		r.TotalSum()/tc)
+}
 
-	return fmt.Sprintf("(%.4f-[%.4f %.4f %.4f]-%.4f) numMerged: %v totalCount: %v",
-		td.valueAtRLocked(0),
-		td.valueAtRLocked(.25),
-		td.valueAtRLocked(.5),
-		td.valueAtRLocked(.75),
-		td.valueAtRLocked(1),
-		td.mu.numMerged,
-		td.totalCountRLocked())
+func (td *Concurrent) String() (s string) {
+	td.ReadStale(func(r Reader) { s = readerString(r) })
+	return s
 }
 
 // TotalCount returns the total count that has been added to the Concurrent.
@@ -197,9 +200,6 @@ func (td *Concurrent) valueAtRLocked(q float64) float64 {
 }
 
 func (td *Concurrent) quantileOfRLocked(v float64) float64 {
-	if td.mu.numMerged == 0 {
-		return 0
-	}
 	return quantileOf(td.centroids[:td.mu.numMerged], v)
 }
 

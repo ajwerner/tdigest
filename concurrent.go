@@ -130,37 +130,13 @@ func (td *Concurrent) Decay(factor float64) {
 	decay(td.centroids[:td.mu.numMerged], factor)
 }
 
-// AddTo adds the currently recorded data into the provided Recorder.
-func (td *Concurrent) AddTo(into Recorder) {
-	if into, isConcurrent := into.(*Concurrent); isConcurrent {
-		td.addToConcurrent(into)
-	}
-	td.mu.Lock()
-	defer td.mu.Unlock()
-	td.compressLocked()
-	totalCount := 0.0
-	for _, c := range td.centroids[:td.mu.numMerged] {
-		into.Add(c.Mean, c.Count-totalCount)
-		totalCount = c.Count
-	}
+func (td *Concurrent) addToRLocked(into Recorder) {
+	addTo(into, td.centroids[:td.mu.numMerged])
 }
 
-// addToConcurrent is an optimization for merging two concurrent tdigests.
-func (td *Concurrent) addToConcurrent(into *Concurrent) {
-	td.mu.Lock()
-	defer td.mu.Unlock()
-	into.mu.Lock()
-	defer into.mu.Unlock()
-	into.compressLocked()
-	td.compressLocked()
-	totalCount := 0.0
-	for i := range td.centroids[:td.mu.numMerged] {
-		into.centroids[into.getAddIndexLocked()] = tdigest.Centroid{
-			Mean:  td.centroids[i].Mean,
-			Count: td.centroids[i].Count - totalCount,
-		}
-		totalCount = td.centroids[i].Count
-	}
+// AddTo adds the currently recorded data into the provided Recorder.
+func (td *Concurrent) AddTo(into Recorder) {
+	td.Read(func(r Reader) { r.AddTo(into) })
 }
 
 func (td *Concurrent) getAddIndexRLocked() (r int) {
@@ -233,6 +209,10 @@ func (td *Concurrent) compressLocked() {
 type readConcurrent Concurrent
 
 var _ Reader = (*readConcurrent)(nil)
+
+func (rtd *readConcurrent) AddTo(into Recorder) {
+	(*Concurrent)(rtd).addToRLocked(into)
+}
 
 func (rtd *readConcurrent) ValueAt(q float64) (v float64) {
 	return (*Concurrent)(rtd).valueAtRLocked(q)

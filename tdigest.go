@@ -1,5 +1,3 @@
-// Package tdigest provides a concurrent, streaming quantiles estimation data
-// structure for float64 data.
 package tdigest
 
 import (
@@ -52,6 +50,42 @@ func New(options ...Option) *TDigest {
 	return &td
 }
 
+func (td *TDigest) Add(mean, count float64) {
+	if td.unmergedIdx == len(td.centroids) {
+		td.compress()
+	}
+	td.centroids[td.unmergedIdx] = tdigest.Centroid{
+		Mean:  mean,
+		Count: count,
+	}
+	td.unmergedIdx++
+}
+
+// Record is a shorthand for td.Add(mean, 1).
+func (td *TDigest) Record(mean float64) {
+	td.Add(mean, 1)
+}
+
+// AddTo adds the data from td into the provided Recorder.
+func (td *TDigest) AddTo(into Recorder) {
+	td.compress()
+	addTo(into, td.centroids[:td.numMerged])
+}
+
+// TotalCount returns the total amount of count which has been added to td.
+// It requires flushing the buffer then is an O(1) operation.
+func (td *TDigest) TotalCount() (c float64) {
+	td.compress()
+	return tdigest.TotalCount(td.centroids[:td.numMerged])
+}
+
+// TotalSum returns the total amount of data added to the TDigest weighted by
+// its associated count.
+func (td *TDigest) TotalSum() float64 {
+	td.compress()
+	return tdigest.TotalSum(td.centroids[:td.numMerged])
+}
+
 func (td *TDigest) String() string {
 	return readerString(td)
 }
@@ -79,43 +113,10 @@ func (td *TDigest) QuantileOf(v float64) (q float64) {
 	return tdigest.QuantileOf(td.centroids[:td.numMerged], v)
 }
 
-func (td *TDigest) TotalCount() (c float64) {
-	td.compress()
-	return tdigest.TotalCount(td.centroids[:td.numMerged])
-}
-
-// AddTo adds the data from td into the provided Recorder.
-func (td *TDigest) AddTo(into Recorder) {
-	td.compress()
-	totalCount := 0.0
-	for _, c := range td.centroids[:td.numMerged] {
-		into.Add(c.Mean, c.Count-totalCount)
-		totalCount = c.Count
-	}
-}
-
-func (td *TDigest) Add(mean, count float64) {
-	if td.unmergedIdx == len(td.centroids) {
-		td.compress()
-	}
-	td.centroids[td.unmergedIdx] = tdigest.Centroid{
-		Mean:  mean,
-		Count: count,
-	}
-	td.unmergedIdx++
-}
-
-func (td *TDigest) TotalSum() float64 {
-	td.compress()
-	return tdigest.TotalSum(td.centroids[:td.numMerged])
-}
-
 func (td *TDigest) compress() {
 	td.numMerged = tdigest.Compress(td.centroids[:td.unmergedIdx], td.compression, td.scale, td.numMerged, td.useWeightLimit)
 	td.unmergedIdx = td.numMerged
 }
-
-func (td *TDigest) Record(mean float64) { td.Add(mean, 1) }
 
 func readerString(r Reader) string {
 	tc := r.TotalCount()
@@ -127,6 +128,14 @@ func readerString(r Reader) string {
 		r.ValueAt(1),
 		r.TotalCount(),
 		r.TotalSum()/tc)
+}
+
+func addTo(into Recorder, merged []tdigest.Centroid) {
+	totalCount := 0.0
+	for _, c := range merged {
+		into.Add(c.Mean, c.Count-totalCount)
+		totalCount = c.Count
+	}
 }
 
 func decay(merged []tdigest.Centroid, factor float64) {

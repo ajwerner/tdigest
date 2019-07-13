@@ -19,8 +19,9 @@ operation.
 
 - [ ] Provide encoding functionality
 - [ ] Benchmark against HDR Histogram
-- [ ] Evaluate accuracy against HDR Histogram at reasonable settings
+- [x] Evaluate accuracy against HDR Histogram at reasonable settings
 - [ ] Implement more scale functions
    - [ ] k_3
    - [ ] k_0 (uniform weight)
 - [ ] Describe use cases, comparisons, trade-offs
+- [ ] Implement trimmed mean

@@ -1,6 +1,7 @@
 package tdigest
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/ajwerner/tdigest/internal/scale"
@@ -102,6 +103,44 @@ func (td *TDigest) Clear() {
 func (td *TDigest) ValueAt(q float64) (v float64) {
 	td.compress()
 	return tdigest.ValueAt(td.centroids[:td.numMerged], q)
+}
+
+type encodedTDigest struct {
+	Means  []float64
+	Counts []float64
+}
+
+func (td *TDigest) UnmarshalJSON(data []byte) error {
+	var enc encodedTDigest
+	if err := json.Unmarshal(data, &enc); err != nil {
+		return err
+	}
+	if len(enc.Counts) > len(td.centroids) {
+		return fmt.Errorf("insufficient buffer space: have %d, need at least %d",
+			len(td.centroids), len(enc.Counts))
+	}
+	for i := 0; i < len(enc.Counts); i++ {
+		td.centroids[i] = tdigest.Centroid{
+			Mean:  enc.Means[i],
+			Count: enc.Counts[i],
+		}
+	}
+	td.numMerged = len(enc.Counts)
+	td.unmergedIdx = len(enc.Counts)
+	return nil
+}
+
+func (td *TDigest) MarshalJSON() ([]byte, error) {
+	td.compress()
+	enc := encodedTDigest{
+		Means:  make([]float64, td.numMerged),
+		Counts: make([]float64, td.numMerged),
+	}
+	for i := 0; i < td.numMerged; i++ {
+		enc.Means[i] = td.centroids[i].Mean
+		enc.Counts[i] = td.centroids[i].Count
+	}
+	return json.Marshal(enc)
 }
 
 // QuantileOf returns the estimated quantile at which this value falls in the

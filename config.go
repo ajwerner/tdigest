@@ -3,6 +3,8 @@ package tdigest
 import (
 	"fmt"
 	"math"
+
+	"github.com/ajwerner/tdigest/internal/scale"
 )
 
 type config struct {
@@ -16,7 +18,7 @@ type config struct {
 	bufferFactor int
 
 	// scale controls how weight is apportioned to centroids.
-	scale scaleFunc
+	scale scale.Func
 
 	useWeightLimit bool
 }
@@ -58,11 +60,11 @@ func (o compressionOption) String() string {
 	return fmt.Sprintf("compression=%f", o)
 }
 
-type scaleOption struct{ scaleFunc }
+type scaleOption struct{ scale.Func }
 
-func (o scaleOption) apply(cfg *config) { cfg.scale = o.scaleFunc }
+func (o scaleOption) apply(cfg *config) { cfg.scale = o.Func }
 func (o scaleOption) String() string {
-	return fmt.Sprintf("scale=%v", o.scaleFunc)
+	return fmt.Sprintf("scale=%v", o.Func)
 }
 
 type weightLimitOption bool
@@ -75,7 +77,7 @@ func (o weightLimitOption) String() string {
 var defaultConfig = config{
 	compression:    128,
 	bufferFactor:   5,
-	scale:          scaleOption{k2{}},
+	scale:          scaleOption{scale.K2{}},
 	useWeightLimit: false,
 }
 

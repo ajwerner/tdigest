@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+
+	"github.com/ajwerner/tdigest/internal/scale"
+	"github.com/ajwerner/tdigest/internal/tdigest"
 )
 
 // Concurrent approximates a distribution of floating point numbers.
@@ -19,7 +22,7 @@ import (
 //
 // The data structure does not allocates memory after its construction.
 type Concurrent struct {
-	scale          scaleFunc
+	scale          scale.Func
 	compression    float64
 	useWeightLimit bool
 	// unmergedIdx is accessed with atomics.
@@ -33,7 +36,7 @@ type Concurrent struct {
 		numMerged int
 	}
 
-	centroids []centroid
+	centroids []tdigest.Centroid
 }
 
 // NewConcurrent creates a new Concurrent.
@@ -42,7 +45,7 @@ func NewConcurrent(options ...Option) *Concurrent {
 	optionList(options).apply(&cfg)
 	var td Concurrent
 	td.mu.L = td.mu.RLocker()
-	td.centroids = make(centroids, cfg.bufferSize())
+	td.centroids = make([]tdigest.Centroid, cfg.bufferSize())
 	td.compression = cfg.compression
 	td.scale = cfg.scale
 	td.useWeightLimit = cfg.useWeightLimit
@@ -113,7 +116,7 @@ func (td *Concurrent) QuantileOf(v float64) (q float64) {
 func (td *Concurrent) Add(mean, count float64) {
 	td.mu.RLock()
 	defer td.mu.RUnlock()
-	td.centroids[td.getAddIndexRLocked()] = centroid{mean: mean, count: count}
+	td.centroids[td.getAddIndexRLocked()] = tdigest.Centroid{Mean: mean, Count: count}
 }
 
 // Record records adds a value with a count of 1.
@@ -137,8 +140,8 @@ func (td *Concurrent) AddTo(into Recorder) {
 	td.compressLocked()
 	totalCount := 0.0
 	for _, c := range td.centroids[:td.mu.numMerged] {
-		into.Add(c.mean, c.count-totalCount)
-		totalCount = c.count
+		into.Add(c.Mean, c.Count-totalCount)
+		totalCount = c.Count
 	}
 }
 
@@ -152,11 +155,11 @@ func (td *Concurrent) addToConcurrent(into *Concurrent) {
 	td.compressLocked()
 	totalCount := 0.0
 	for i := range td.centroids[:td.mu.numMerged] {
-		into.centroids[into.getAddIndexLocked()] = centroid{
-			mean:  td.centroids[i].mean,
-			count: td.centroids[i].count - totalCount,
+		into.centroids[into.getAddIndexLocked()] = tdigest.Centroid{
+			Mean:  td.centroids[i].Mean,
+			Count: td.centroids[i].Count - totalCount,
 		}
-		totalCount = td.centroids[i].count
+		totalCount = td.centroids[i].Count
 	}
 }
 
@@ -197,19 +200,19 @@ func (td *Concurrent) valueAtRLocked(q float64) float64 {
 	if td.mu.numMerged == 0 {
 		return 0
 	}
-	return valueAt(td.centroids[:td.mu.numMerged], q)
+	return tdigest.ValueAt(td.centroids[:td.mu.numMerged], q)
 }
 
 func (td *Concurrent) quantileOfRLocked(v float64) float64 {
-	return quantileOf(td.centroids[:td.mu.numMerged], v)
+	return tdigest.QuantileOf(td.centroids[:td.mu.numMerged], v)
 }
 
 func (td *Concurrent) totalCountRLocked() float64 {
-	return totalCount(td.centroids[:td.mu.numMerged])
+	return tdigest.TotalCount(td.centroids[:td.mu.numMerged])
 }
 
 func (td *Concurrent) totalSumRLocked() float64 {
-	return totalSum(td.centroids[:td.mu.numMerged])
+	return tdigest.TotalSum(td.centroids[:td.mu.numMerged])
 }
 
 func (td *Concurrent) compress() {
@@ -223,7 +226,7 @@ func (td *Concurrent) compressLocked() {
 	if idx > len(td.centroids) {
 		idx = len(td.centroids)
 	}
-	td.mu.numMerged = compress(td.centroids[:idx], td.compression, td.scale, td.mu.numMerged, td.useWeightLimit)
+	td.mu.numMerged = tdigest.Compress(td.centroids[:idx], td.compression, td.scale, td.mu.numMerged, td.useWeightLimit)
 	atomic.StoreInt64(&td.unmergedIdx, int64(td.mu.numMerged))
 }
 

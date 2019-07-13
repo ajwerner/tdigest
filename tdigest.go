@@ -3,14 +3,23 @@
 package tdigest
 
 import (
+	"fmt"
 	"math"
 	"sort"
 )
 
+type Recorder interface {
+	Add(mean, count float64)
+}
+
 // Sketch is an
 type Sketch interface {
 	Reader
-	Add(mean, count float64)
+	Recorder
+}
+
+type Mergable interface {
+	AddTo(Recorder)
 }
 
 // Reader provides read access to a float64 valued distribution by
@@ -49,13 +58,10 @@ func New(options ...Option) *TDigest {
 }
 
 func (td *TDigest) String() string {
-	// totalCount := td.TotalCount()
 	return readerString(td)
-	// return fmt.Sprintf("TDigest{mean: %f, count: %f, min: %f, max: %f}",
-	// 	td.TotalSum()/totalCount, totalCount, td.ValueAt(0), td.ValueAt(1))
 }
 
-func (td *TDigest) clear() {
+func (td *TDigest) Clear() {
 	*td = TDigest{
 		scale:          td.scale,
 		compression:    td.compression,
@@ -83,15 +89,14 @@ func (td *TDigest) TotalCount() (c float64) {
 	return totalCount(td.centroids[:td.numMerged])
 }
 
-// Merge combines other into td.
-func (td *TDigest) Merge(other *TDigest) {
-	other.compress()
-	totalCount := 0.0
-	for i := range other.centroids[:other.numMerged] {
-		td.Add(other.centroids[i].mean, other.centroids[i].count-totalCount)
-		totalCount = other.centroids[i].count
-	}
+// AddTo adds the data from td into the provided Recorder.
+func (td *TDigest) AddTo(into Recorder) {
 	td.compress()
+	totalCount := 0.0
+	for _, c := range td.centroids[:td.numMerged] {
+		into.Add(c.mean, c.count-totalCount)
+		totalCount = c.count
+	}
 }
 
 func (td *TDigest) Add(mean, count float64) {
@@ -259,6 +264,18 @@ func compress(
 	}
 	cl[cur].count += countSoFar
 	return cur + 1
+}
+
+func readerString(r Reader) string {
+	tc := r.TotalCount()
+	return fmt.Sprintf("(%.4f-[%.4f %.4f %.4f]-%.4f) totalCount: %v, avg: %v",
+		r.ValueAt(0),
+		r.ValueAt(.25),
+		r.ValueAt(.5),
+		r.ValueAt(.75),
+		r.ValueAt(1),
+		r.TotalCount(),
+		r.TotalSum()/tc)
 }
 
 func decay(merged []centroid, factor float64) {

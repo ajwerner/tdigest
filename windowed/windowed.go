@@ -1,4 +1,4 @@
-package tdigest
+package windowed
 
 import (
 	"fmt"
@@ -6,46 +6,139 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ajwerner/tdigest"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 )
 
-// Windowed is a TDigest that provides a single write path but provides mechanisms to read
-// at various different timescales. The Windowed structure uses hierarchical windows to provide
-// high precision estimates at approximate timescales while requiring sublinear number of buckets
-// to achieve that historical timescale. The Windowed structure makes tradeoffs which can be configured
+// Windowed is a TDigest that provides a single write path but
+// provides mechanisms to read at various different timescales.The
+// Windowed structure uses hierarchical windows to provide high
+// precision estimates at approximate timescales while requiring
+// sublinear number of buckets.
 //
-// Imagine we wanted to know about the trailing 1s and 1m. In practice one thing that we could do is
-// keep a ring-buffer of the last 1m of tdigests in 1s intervals such that there are 59 "closed" digests
-// which only contain a "merged" buffer and no write buffer as well as two "read" digests and an "open"
-// digest. This will contain a single concurrent write buffer that gets merged into each of the "read"
-// digests as well as the "open" digest.
+// The structure of the hiearchy is configurable to control
+// size-accuracy tradeoffs for a given trailing trailing timescale.
 //
-// This already offers some issues, it is not actually the trailing 1s and 1m you'll be reading but rather
-// it's the last 1-2s depending on when the last tick occurred and similarly for the minute it's the last
-// 1m-1m1s. For the minute this certainly isn't a problem and even for the trailing 1s this is probably okay
-// (furthermore, we're probably not interested in the trailing 1s, instead we're more likely to be interested
-// in the last ~10s.
+// TODO(ajwerner): Figure out how clients can ergonomically express their timescale configuration.
 //
-// We can extend this tradeoff further by allowing further window size. For example, imagine we keep this
-// 1s buffer as described above, but then we also keep a next layer which represent 2s intervals, then we
-// only need to keep 4 of them to get to a trailing 10s buffer with a 2s window size. We can then layer these
-// things up to use 5 more to get the trailing 1m with a 10s window size. This allows us to get a reasonable
-// window size on a 5 minute trailing period of 1m using just 15 tdigests instead of the 300 we'd need if we
-// kept all 1s ring buffers.
+// Imagine we wanted to know about the trailing 1s and 1m. One thing
+// that we could do is keep a ring-buffer of the last 1m of tdigests
+// in 1s intervals such that there are 59 "closed" digests which only
+// contain a "merged" buffer and no write buffer as well as two "read"
+// digests and an "open" digest. This will contain a single concurrent
+// write buffer that gets merged into each of the "read" digests as
+// well as the "open" digest.
+//
+// This already offers some issues, it is not actually the trailing 1s
+// and 1m you'll be reading but rather it's the last 1-2s depending on
+// when the last tick occurred and similarly for the minute it's the
+// last 1m-1m1s. For the minute this certainly isn't a problem and
+// even for the trailing 1s this is probably okay (furthermore, we're
+// probably not interested in the trailing 1s, instead we're more
+// likely to be interested in the last ~10s.
+//
+// We can extend this tradeoff further by allowing further window
+// size. For example, imagine we keep this 1s buffer as described
+// above, but then we also keep a next layer which represent 2s
+// intervals, then we only need to keep 4 of them to get to a trailing
+// 10s buffer with a 2s window size. We can then layer these things up
+// to use 5 more to get the trailing 1m with a 10s window size. This
+// allows us to get a reasonable window size on a 5 minute trailing
+// period of 1m using just 15 tdigests instead of the 300 we'd need if
+// we kept all 1s ring buffers.
+//
+//
+//______________________________________________________________________________
+//
+// In the beginning all of the trailing levels start at the front of their cycles.
+//
+//      0  |  |  |  |  V  |  |  |  |  X  |  |  |  |  XV |  |  |  |  XX |  |  |  | XXV |  |  |  |XXX
+//  o|0s]
+//  0|  ( 1]
+//  1|  (    2|    4|    6|    8]
+//  2|  (                           10]                           20]                          30]
+//  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+//  2|  (10]20]30]40]
+//  3|  (            50]           100]           150]           200]           250]
+//      0  |  |  |  |  L  |  |  |  |  C  |  |  |  |  CL |  |  |  |  CC |  |  |  | CCL |  |  |  |CCC
+//
+//_______________________________________________________________________________
+//
+// Over time buckets slide over until tick events happen.
+//
+//      0  |  |  |  |  V  |  |  |  |  X  |  |  |  |  XV |  |  |  |  XX |  |  |  | XXV |  |  |  |XXX
+//  0| -1s]<
+//  1|    (2s]
+//           (  <4s]  <6s]  <8s] <10s]<
+//  2|             (                         <14s]                        <24s]<
+//  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+//  2|    (14]24]34]44]54]<
+//  3|                   (              ]              ]              ]              ]             ]<
+//      0  |  |  |  |  L  |  |  |  |  C  |  |  |  |  CL |  |  |  |  CC |  |  |  | CCL |  |  |  |CCC
+//_______________________________________________________________________________
+//
+//
+//      (1s]
+//         (2s]
+//            (   4s]   6s]   8s]  10s]
+//                                    (                          20s]                          30s]
+//      ___________________________________________________________________________________________
+//      0  |  |  |  |  V  |  |  |  |  X  |  |  |  |  V  |  |  |  |  D  |  |  |  |  V  |  |  |  |  D
+//
+//
+//  1|  (   2s]   4s]   6s]   8s]  10s]
+//  2|                                (                          20s]                         30s]
+//  3|..___________________________________________________________________________________________
+//      0  |  |  |  |  V  |  |  |  |  X  |  |  |  |  XV |  |  |  |  XX |  |  |  | XXV |  |  |  |XXX
+//
+//
+//
+//  We only keep these around so that we can read at this level with a 2s window
+//
+//  1|  (   2s]   4s]   6s]   8s]
+//  2|  (                             ]                          20s]
+//  3|..___________________________________________________________________________________________
+//      0  |  |  |  |  V  |  |  |  |  X  |  |  |  |  XV |  |  |  |  XX |  |  |  | XXV |  |  |  |XXX
+//
+//  2|  (20]  ]  ]  ]
+//  3|  (           ]              ]              ]              ]
+//      ___________________________________________________________________________________________
+//      0  |  |  |  |  L  |  |  |  |  C  |  |  |  |  CL |  |  |  |  CC |  |  |  | CCL |  |  |  |CCC
+//
+//-------------------------------------------------------------------------------
+//
+//  1|  (   2s]   4s]   6s]   8s]
+//  2|  (                             ]                          20s]
+//  3|..___________________________________________________________________________________________
+//      0  |  |  |  |  V  |  |  |  |  X  |  |  |  |  XV |  |  |  |  XX |  |  |  | XXV |  |  |  |XXX
+//
+//  2|  (20]  ]  ]  ]
+//  3|  (           ]              ]              ]              ]
+//      ___________________________________________________________________________________________
+//      0  |  |  |  |  L  |  |  |  |  C  |  |  |  |  CL |  |  |  |  CC |  |  |  | CCL |  |  |  |CCC
+//
+//-------------------------------------------------------------------------------
 type Windowed struct {
 	tickInterval time.Duration
 
 	mu struct {
 		sync.RWMutex
-		mergeBufMu syncutil.Mutex
-		mergeBuf   *TDigest
-		spare      *TDigest
-		lastTick   time.Time
-		ticks      int
+		spare    *tdigest.TDigest
+		lastTick time.Time
+		ticks    int
 
 		// We need to have levels
-		open   *Concurrent
+		open   *tdigest.Concurrent
 		levels []level
+	}
+
+	// TODO(ajwerner): eliminate this whole thing.
+	// Probably create a reader that allocates the memory and allows for
+	// concurrent access.
+	mergeBufMu struct {
+		syncutil.Mutex
+
+		buf *tdigest.TDigest
 	}
 
 	// We now want some number of levels where each level has a tick period
@@ -62,18 +155,18 @@ type Windowed struct {
 type digestRingBuf struct {
 	head    int32
 	len     int32
-	digests []*TDigest
+	digests []*tdigest.TDigest
 }
 
-func (rb *digestRingBuf) back() *TDigest {
+func (rb *digestRingBuf) back() *tdigest.TDigest {
 	return rb.at(rb.len - 1)
 }
 
-func (rb *digestRingBuf) at(idx int32) *TDigest {
+func (rb *digestRingBuf) at(idx int32) *tdigest.TDigest {
 	return rb.digests[(rb.head+idx)%int32(len(rb.digests))]
 }
 
-func (rb *digestRingBuf) pushFront(td *TDigest) {
+func (rb *digestRingBuf) pushFront(td *tdigest.TDigest) {
 	if rb.full() {
 		panic("cannot push onto a full digest")
 	}
@@ -84,7 +177,7 @@ func (rb *digestRingBuf) pushFront(td *TDigest) {
 	rb.len++
 }
 
-func (rb *digestRingBuf) popBack() *TDigest {
+func (rb *digestRingBuf) popBack() *tdigest.TDigest {
 	ret := rb.back()
 	rb.len--
 	return ret
@@ -94,7 +187,7 @@ func (rb *digestRingBuf) full() bool {
 	return rb.len == int32(len(rb.digests))
 }
 
-func (rb *digestRingBuf) forEach(f func(int32, *TDigest)) {
+func (rb *digestRingBuf) forEach(f func(int32, *tdigest.TDigest)) {
 	for i := int32(0); i < rb.len; i++ {
 		f(i, rb.at(i))
 	}
@@ -129,33 +222,26 @@ func NewWindowed() *Windowed {
 		},
 		{
 			period:        60,
-			digestRingBuf: makeDigests(4, size),
+			digestRingBuf: makeDigests(3, size),
 		},
 		{
-			period:        300,
-			digestRingBuf: makeDigests(2, size),
-		},
-		{
-			period:        900,
-			digestRingBuf: makeDigests(1, size),
+			period:        120,
+			digestRingBuf: makeDigests(100, size),
 		},
 	}
-	w.mu.open = NewConcurrent(Compression(size), BufferFactor(10))
-	w.mu.spare = New(Compression(size), BufferFactor(2))
-	w.mu.mergeBuf = New(Compression(size), BufferFactor(len(w.mu.levels)-1))
-	// Probably should make buffer factor here the max of len(levels) and the
-	// max of any level in len
-
+	w.mu.open = tdigest.NewConcurrent(tdigest.Compression(size), tdigest.BufferFactor(10))
+	w.mu.spare = tdigest.New(tdigest.Compression(size), tdigest.BufferFactor(2))
+	w.mergeBufMu.buf = tdigest.New(tdigest.Compression(size), tdigest.BufferFactor(len(w.mu.levels)-1))
 	return w
 }
 
 func makeDigests(n int, size int) digestRingBuf {
 	ret := digestRingBuf{
-		digests: make([]*TDigest, 0, n),
+		digests: make([]*tdigest.TDigest, 0, n),
 	}
 	for i := 0; i < n; i++ {
 		ret.digests = append(ret.digests,
-			New(Compression(float64(size)), BufferFactor(1)))
+			tdigest.New(tdigest.Compression(float64(size)), tdigest.BufferFactor(1)))
 		ret.len++
 	}
 	return ret
@@ -199,18 +285,15 @@ func (w *Windowed) tickLocked() {
 	w.mu.ticks++
 	w.mu.lastTick = w.mu.lastTick.Add(w.tickInterval)
 	// Take the merged buf from the top and write it into the "spare"
-	w.mu.open.compress()
 	closed := w.mu.spare
 	w.mu.spare = nil
-	closed.numMerged = copy(closed.centroids,
-		w.mu.open.centroids[:w.mu.open.mu.numMerged])
-	closed.unmergedIdx = closed.numMerged
-	w.mu.open.clear()
+	w.mu.open.AddTo(closed)
+	w.mu.open.Clear()
 	for i := range w.mu.levels {
 		l := &w.mu.levels[i]
 		tail := l.popBack()
-		l.forEach(func(_ int32, td *TDigest) {
-			td.Merge(closed)
+		l.forEach(func(_ int32, td *tdigest.TDigest) {
+			closed.AddTo(td)
 		})
 		l.pushFront(closed)
 		var next *level
@@ -219,14 +302,14 @@ func (w *Windowed) tickLocked() {
 		}
 		tickNext := next != nil && w.mu.ticks%next.period == 0
 		if tickNext {
-			tail.Merge(closed)
+			closed.AddTo(tail)
 		}
 		closed = tail
 		if !tickNext {
 			break
 		}
 	}
-	closed.clear()
+	closed.Clear()
 	w.mu.spare = closed
 }
 
@@ -235,7 +318,7 @@ var NowFunc = time.Now
 func (w *Windowed) String() string {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
-	return w.stringRLocked(NowFunc())
+	return w.stringRLocked(w.mu.lastTick)
 }
 
 func (w *Windowed) stringRLocked(now time.Time) string {
@@ -247,9 +330,8 @@ func (w *Windowed) stringRLocked(now time.Time) string {
 	for i := range w.mu.levels {
 		l := &w.mu.levels[i]
 		offset := curDur + w.tickInterval*time.Duration(w.mu.ticks%(l.period))
-		l.forEach(func(j int32, td *TDigest) {
+		l.forEach(func(j int32, td *tdigest.TDigest) {
 			dur := offset + w.tickInterval*time.Duration(j+1)*time.Duration(l.period)
-			td.compress()
 			fmt.Fprintf(&buf, "\t%v,%v: (%v-%v): %v\n", i, j, offset, dur, td)
 		})
 	}
@@ -257,7 +339,7 @@ func (w *Windowed) stringRLocked(now time.Time) string {
 }
 
 type WindowedReader interface {
-	Reader(trailing time.Duration) (last time.Duration, r Reader)
+	Reader(trailing time.Duration) (last time.Duration, r tdigest.Reader)
 }
 
 type windowedReader Windowed
@@ -265,17 +347,17 @@ type windowedReader Windowed
 func (w *Windowed) Reader(f func(WindowedReader)) {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
-	w.mu.mergeBufMu.Lock()
-	defer w.mu.mergeBufMu.Unlock()
+	w.mergeBufMu.Lock()
+	defer w.mergeBufMu.Unlock()
 	f((*windowedReader)(w))
 }
 
-func (w *windowedReader) Reader(trailing time.Duration) (last time.Duration, r Reader) {
+func (w *windowedReader) Reader(trailing time.Duration) (last time.Duration, r tdigest.Reader) {
 	// we want to find the bucket which contains this time window
 	// and then fill it in below.
 	// TODO(ajwerner): optimize the reader behavior to just accumulate
 	// the indexes and do a single merge pass into the buffer.
-	w.mu.mergeBuf.clear()
+	w.mergeBufMu.buf.Clear()
 	// First we work our way up the levels until we find the
 	// level that contains this time period
 	//
@@ -283,13 +365,13 @@ func (w *windowedReader) Reader(trailing time.Duration) (last time.Duration, r R
 	// now := NowFunc()
 	curDur := time.Duration(0) // now.Sub(w.mu.lastTick)
 	var i int
-	fmt.Println("reader", trailing, (*Windowed)(w).stringRLocked(w.mu.lastTick))
+	//fmt.Println("reader", trailing, (*Windowed)(w).stringRLocked(w.mu.lastTick))
 	for i = 0; i < len(w.mu.levels); i++ {
 		l := &w.mu.levels[i]
 		bucketDur := w.tickInterval * time.Duration(l.period)
 		levelDur := bucketDur * time.Duration(len(l.digests)+1)
-		fmt.Println("up", i, levelDur, bucketDur, trailing)
-		if levelDur <= trailing {
+		//fmt.Println("up", i, levelDur, bucketDur, trailing)
+		if levelDur <= trailing && i+1 < len(w.mu.levels) {
 			continue
 		}
 		offset := w.tickInterval * time.Duration(w.mu.ticks%l.period)
@@ -298,8 +380,8 @@ func (w *windowedReader) Reader(trailing time.Duration) (last time.Duration, r R
 			idx--
 		}
 		trailing = offset
-		fmt.Println("at", i, idx, levelDur, bucketDur, trailing, offset)
-		w.mu.mergeBuf.Merge(l.at(int32(idx)))
+		//fmt.Println("at", i, idx, levelDur, bucketDur, trailing, offset)
+		l.at(int32(idx)).AddTo(w.mergeBufMu.buf)
 		last = offset + time.Duration(idx+1)*bucketDur
 		break
 	}
@@ -307,79 +389,15 @@ func (w *windowedReader) Reader(trailing time.Duration) (last time.Duration, r R
 		l := &w.mu.levels[i]
 		bucketDur := w.tickInterval * time.Duration(l.period)
 		offset := int(trailing / bucketDur)
-		fmt.Println("down", i, offset, bucketDur, trailing)
+		//fmt.Println("down", i, offset, bucketDur, trailing)
 		if offset == len(l.digests) {
 			offset--
 		}
 		trailing = curDur + w.tickInterval*time.Duration(w.mu.ticks%(l.period))
 	}
 	// TODO(ajwerner): deal with adding cur
-	fmt.Println(last, w.mu.mergeBuf)
-	return last, w.mu.mergeBuf
+	return last, w.mergeBufMu.buf
 }
-
-//   ]
-//      [1s] 3s] 5s] 7s] 9s]
-//
-//    |
-//    V
-// :]
-//
-
-//
-//_______________________________________________________________________________
-//
-//      0  |  |  |  |  V  |  |  |  |  X  |  |  |  |  XV |  |  |  |  XX |  |  |  | XXV |  |  |  |XXX
-//  0| -1s]<
-//  1|    (2s]  <4s]  <6s]  <8s] <10s]<
-//  2|                               (                         <20s]                        <30s]<
-//  3|---------------------------------------------------------------------------------------------
-//  2|     (20]30]40]50]<
-//  3|                 (              ]              ]              ]              ]             ]<
-//      0  |  |  |  |  L  |  |  |  |  C  |  |  |  |  CL |  |  |  |  CC |  |  |  | CCL |  |  |  |CCC
-//_______________________________________________________________________________
-
-//-------------------------------------------------------------------------------
-//
-//      (1s]
-//         (2s]
-//            (   4s]   6s]   8s]  10s]
-//                                    (                          20s]                          30s]
-//      ___________________________________________________________________________________________
-//      0  |  |  |  |  V  |  |  |  |  X  |  |  |  |  V  |  |  |  |  D  |  |  |  |  V  |  |  |  |  D
-//
-//
-//  1|  (   2s]   4s]   6s]   8s]  10s]
-//  2|                                (                          20s]                         30s]
-//  3|..___________________________________________________________________________________________
-//      0  |  |  |  |  V  |  |  |  |  X  |  |  |  |  XV |  |  |  |  XX |  |  |  | XXV |  |  |  |XXX
-
-//-------------------------------------------------------------------------------
-//
-//  We only keep these around so that we can read at this level with a 2s window
-//
-//  1|  (   2s]   4s]   6s]   8s]
-//  2|  (                             ]                          20s]
-//  3|..___________________________________________________________________________________________
-//      0  |  |  |  |  V  |  |  |  |  X  |  |  |  |  XV |  |  |  |  XX |  |  |  | XXV |  |  |  |XXX
-//
-//  2|  (20]  ]  ]  ]
-//  3|  (           ]              ]              ]              ]
-//      ___________________________________________________________________________________________
-//      0  |  |  |  |  L  |  |  |  |  C  |  |  |  |  CL |  |  |  |  CC |  |  |  | CCL |  |  |  |CCC
-
-//-------------------------------------------------------------------------------
-//
-//  1|  (   2s]   4s]   6s]   8s]
-//  2|  (                             ]                          20s]
-//  3|..___________________________________________________________________________________________
-//      0  |  |  |  |  V  |  |  |  |  X  |  |  |  |  XV |  |  |  |  XX |  |  |  | XXV |  |  |  |XXX
-//
-//  2|  (20]  ]  ]  ]
-//  3|  (           ]              ]              ]              ]
-//      ___________________________________________________________________________________________
-//      0  |  |  |  |  L  |  |  |  |  C  |  |  |  |  CL |  |  |  |  CC |  |  |  | CCL |  |  |  |CCC
-//-------------------------------------------------------------------------------
 
 //
 // I can read from the combo of the last window of each layer and the open window.

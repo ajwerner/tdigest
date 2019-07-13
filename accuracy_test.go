@@ -53,7 +53,19 @@ func TestAccuracy(t *testing.T) {
 					h4 := NewConcurrent(options...)
 					addData(100, data, h1, h2, h3, h4)
 					for _, h := range []*Concurrent{h2, h3, h4} {
-						h1.Merge(h)
+						h.AddTo(h1)
+					}
+					checkAccuracy(t, data, h1)
+				})
+				t.Run(dist+" "+order+" multi non concurrent"+useString, func(t *testing.T) {
+					shuffle(data)
+					h1 := New(options...)
+					h2 := New(options...)
+					h3 := New(options...)
+					h4 := New(options...)
+					addData(1, data, h1, h2, h3, h4)
+					for _, h := range []*TDigest{h2, h3, h4} {
+						h.AddTo(h1)
 					}
 					checkAccuracy(t, data, h1)
 				})

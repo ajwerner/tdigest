@@ -1,10 +1,7 @@
-// Package tdigest provides a concurrent, streaming quantiles estimation data
-// structure for float64 data.
 package tdigest
 
 import (
 	"fmt"
-	"math/rand"
 	"sync"
 	"sync/atomic"
 )
@@ -52,7 +49,8 @@ func NewConcurrent(options ...Option) *Concurrent {
 	return &td
 }
 
-func (td *Concurrent) clear() {
+// Clear resets the data structure, clearing all recorded data.
+func (td *Concurrent) Clear() {
 	td.mu.Lock()
 	defer td.mu.Unlock()
 	atomic.StoreInt64(&td.unmergedIdx, 0)
@@ -74,18 +72,6 @@ func (td *Concurrent) ReadStale(f func(d Reader)) {
 	td.mu.RLock()
 	defer td.mu.RUnlock()
 	f((*readConcurrent)(td))
-}
-
-func readerString(r Reader) string {
-	tc := r.TotalCount()
-	return fmt.Sprintf("(%.4f-[%.4f %.4f %.4f]-%.4f) totalCount: %v, avg: %v",
-		r.ValueAt(0),
-		r.ValueAt(.25),
-		r.ValueAt(.5),
-		r.ValueAt(.75),
-		r.ValueAt(1),
-		r.TotalCount(),
-		r.TotalSum()/tc)
 }
 
 func (td *Concurrent) String() (s string) {
@@ -141,21 +127,36 @@ func (td *Concurrent) Decay(factor float64) {
 	decay(td.centroids[:td.mu.numMerged], factor)
 }
 
-// Merge combines other into td.
-func (td *Concurrent) Merge(other *Concurrent) {
+// AddTo adds the currently recorded data into the provided Recorder.
+func (td *Concurrent) AddTo(into Recorder) {
+	if into, isConcurrent := into.(*Concurrent); isConcurrent {
+		td.addToConcurrent(into)
+	}
 	td.mu.Lock()
 	defer td.mu.Unlock()
-	other.mu.Lock()
-	defer other.mu.Unlock()
-	other.compressLocked()
+	td.compressLocked()
 	totalCount := 0.0
-	for i := range other.centroids {
-		other.centroids[i].count -= totalCount
-		totalCount += other.centroids[i].count
+	for _, c := range td.centroids[:td.mu.numMerged] {
+		into.Add(c.mean, c.count-totalCount)
+		totalCount = c.count
 	}
-	perm := rand.Perm(other.mu.numMerged)
-	for _, i := range perm {
-		td.centroids[td.getAddIndexLocked()] = other.centroids[i]
+}
+
+// addToConcurrent is an optimization for merging two concurrent tdigests.
+func (td *Concurrent) addToConcurrent(into *Concurrent) {
+	td.mu.Lock()
+	defer td.mu.Unlock()
+	into.mu.Lock()
+	defer into.mu.Unlock()
+	into.compressLocked()
+	td.compressLocked()
+	totalCount := 0.0
+	for i := range td.centroids[:td.mu.numMerged] {
+		into.centroids[into.getAddIndexLocked()] = centroid{
+			mean:  td.centroids[i].mean,
+			count: td.centroids[i].count - totalCount,
+		}
+		totalCount = td.centroids[i].count
 	}
 }
 

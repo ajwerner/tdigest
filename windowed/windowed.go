@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/ajwerner/tdigest"
-	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 )
 
 // Windowed is a TDigest that provides a single write path but
@@ -118,7 +117,7 @@ import (
 //      0  |  |  |  |  L  |  |  |  |  C  |  |  |  |  CL |  |  |  |  CC |  |  |  | CCL |  |  |  |CCC
 //
 //-------------------------------------------------------------------------------
-type Windowed struct {
+type TDigest struct {
 	tickInterval time.Duration
 
 	mu struct {
@@ -130,15 +129,6 @@ type Windowed struct {
 		// We need to have levels
 		open   *tdigest.Concurrent
 		levels []level
-	}
-
-	// TODO(ajwerner): eliminate this whole thing.
-	// Probably create a reader that allocates the memory and allows for
-	// concurrent access.
-	mergeBufMu struct {
-		syncutil.Mutex
-
-		buf *tdigest.TDigest
 	}
 
 	// We now want some number of levels where each level has a tick period
@@ -198,13 +188,15 @@ type level struct {
 	digestRingBuf
 }
 
-// NewWindowed returns a new Windowed TDigest.
-func NewWindowed() *Windowed {
+const size = 128
+
+// NewTDigest returns a new TDigest TDigest.
+func NewTDigest() *TDigest {
 	// TODO(ajwerner): add configuration.
-	w := &Windowed{
+	w := &TDigest{
 		tickInterval: time.Second,
 	}
-	const size = 128
+	// TODO(ajwerner): fix buf where the last one has only 5 buckets
 	w.mu.levels = []level{
 		{
 			// (0-1)-(1-2)s
@@ -226,12 +218,11 @@ func NewWindowed() *Windowed {
 		},
 		{
 			period:        120,
-			digestRingBuf: makeDigests(100, size),
+			digestRingBuf: makeDigests(10, size),
 		},
 	}
 	w.mu.open = tdigest.NewConcurrent(tdigest.Compression(size), tdigest.BufferFactor(10))
 	w.mu.spare = tdigest.New(tdigest.Compression(size), tdigest.BufferFactor(2))
-	w.mergeBufMu.buf = tdigest.New(tdigest.Compression(size), tdigest.BufferFactor(len(w.mu.levels)-1))
 	return w
 }
 
@@ -248,17 +239,16 @@ func makeDigests(n int, size int) digestRingBuf {
 
 }
 
-func (w *Windowed) AddAt(t time.Time, mean, count float64) {
+func (w *TDigest) AddAt(t time.Time, mean, count float64) {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	if t.Sub(w.mu.lastTick) > w.tickInterval {
 		w.tickAtRLocked(t)
 	}
 	w.mu.open.Add(mean, count)
-	// fmt.Printf("Add %v ticks: %v, mean: %v, count: %v: %v\n", t, w.mu.ticks, mean, count, w.stringRLocked(t))
 }
 
-func (w *Windowed) tickAtRLocked(t time.Time) {
+func (w *TDigest) tickAtRLocked(t time.Time) {
 	w.mu.RUnlock()
 	defer w.mu.RLock()
 	w.mu.Lock()
@@ -274,11 +264,10 @@ func (w *Windowed) tickAtRLocked(t time.Time) {
 	}
 	for i := 0; i < ticksNeeded; i++ {
 		w.tickLocked()
-		// fmt.Println("tick", w.mu.ticks, t, w.stringRLocked(w.mu.lastTick))
 	}
 }
 
-func (w *Windowed) tickLocked() {
+func (w *TDigest) tickLocked() {
 	// A tick means moving the current open interval down to the next level
 	// It may also mean merging all of the current bottom level into a new
 	// digest for the next level which may need to happen recursively.
@@ -313,15 +302,13 @@ func (w *Windowed) tickLocked() {
 	w.mu.spare = closed
 }
 
-var NowFunc = time.Now
-
-func (w *Windowed) String() string {
+func (w *TDigest) String() string {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	return w.stringRLocked(w.mu.lastTick)
 }
 
-func (w *Windowed) stringRLocked(now time.Time) string {
+func (w *TDigest) stringRLocked(now time.Time) string {
 	var buf strings.Builder
 	fmt.Fprintf(&buf, "Windowed{lastTick: %v\n", w.mu.lastTick)
 	curDur := now.Sub(w.mu.lastTick)
@@ -338,39 +325,51 @@ func (w *Windowed) stringRLocked(now time.Time) string {
 	return buf.String()
 }
 
-type WindowedReader interface {
-	Reader(trailing time.Duration) (last time.Duration, r tdigest.Reader)
+// Reader enables reading from a TDigest.
+//
+// Reader allocates memory lazily but will do so only once if it continues
+// to see the same *TDigest.
+//
+// Reader is safe for concurrent use.
+type Reader struct {
+	mu struct {
+		sync.Mutex
+		w   *TDigest
+		buf *tdigest.TDigest
+	}
 }
 
-type windowedReader Windowed
+func (r *Reader) Read(
+	trailing time.Duration, w *TDigest, f func(last time.Duration, r tdigest.Reader),
+) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.mu.w != w {
+		r.mu.w = w
+		r.mu.buf = tdigest.New(
+			tdigest.Compression(size),
+			tdigest.BufferFactor(len(w.mu.levels)),
+		)
+	}
 
-func (w *Windowed) Reader(f func(WindowedReader)) {
+	r.mu.buf.Clear()
 	w.mu.RLock()
-	defer w.mu.RUnlock()
-	w.mergeBufMu.Lock()
-	defer w.mergeBufMu.Unlock()
-	f((*windowedReader)(w))
-}
-
-func (w *windowedReader) Reader(trailing time.Duration) (last time.Duration, r tdigest.Reader) {
 	// we want to find the bucket which contains this time window
 	// and then fill it in below.
 	// TODO(ajwerner): optimize the reader behavior to just accumulate
 	// the indexes and do a single merge pass into the buffer.
-	w.mergeBufMu.buf.Clear()
+
 	// First we work our way up the levels until we find the
 	// level that contains this time period
 	//
 	// Then we work our way down to fill in the remainder
-	// now := NowFunc()
 	curDur := time.Duration(0) // now.Sub(w.mu.lastTick)
 	var i int
-	//fmt.Println("reader", trailing, (*Windowed)(w).stringRLocked(w.mu.lastTick))
+	var last time.Duration
 	for i = 0; i < len(w.mu.levels); i++ {
 		l := &w.mu.levels[i]
 		bucketDur := w.tickInterval * time.Duration(l.period)
 		levelDur := bucketDur * time.Duration(len(l.digests)+1)
-		//fmt.Println("up", i, levelDur, bucketDur, trailing)
 		if levelDur <= trailing && i+1 < len(w.mu.levels) {
 			continue
 		}
@@ -380,103 +379,21 @@ func (w *windowedReader) Reader(trailing time.Duration) (last time.Duration, r t
 			idx--
 		}
 		trailing = offset
-		//fmt.Println("at", i, idx, levelDur, bucketDur, trailing, offset)
-		l.at(int32(idx)).AddTo(w.mergeBufMu.buf)
+		l.at(int32(idx)).AddTo(r.mu.buf)
 		last = offset + time.Duration(idx+1)*bucketDur
 		break
 	}
 	for ; i >= 0 && trailing > curDur; i-- {
 		l := &w.mu.levels[i]
 		bucketDur := w.tickInterval * time.Duration(l.period)
-		offset := int(trailing / bucketDur)
-		//fmt.Println("down", i, offset, bucketDur, trailing)
-		if offset == len(l.digests) {
-			offset--
+		idx := int(trailing / bucketDur)
+		if idx == len(l.digests) {
+			idx--
 		}
 		trailing = curDur + w.tickInterval*time.Duration(w.mu.ticks%(l.period))
+		l.at(int32(idx)).AddTo(r.mu.buf)
 	}
+	w.mu.RUnlock()
 	// TODO(ajwerner): deal with adding cur
-	return last, w.mergeBufMu.buf
+	f(last, r.mu.buf)
 }
-
-//
-// I can read from the combo of the last window of each layer and the open window.
-// The read buffer at most needs to be the compression factor*depth
-//
-//
-// Upon tick I have to ask if I need to use the full thing?
-//
-//
-//     -]
-//      (   2s]   4s]   6s]   8s]  10s]
-//      _______________________________
-//      0  |  |  |  |  V  |  |  |  |  D
-//
-//
-
-//      0  |  |  |  |  V  |  |  |  |  D  |  |  |  |  V  |  |  |  |  D
-//    (<1s]
-//        (<2s]  <4s]  <6s]  <8s] <10s]
-//                                    (                         <20s]                         <30s]
-//
-//      0  |  |  |  |  V  |  |  |  |  D
-//      (1s]
-//         (2s]   4s]   6s]   8s]  10s]
-//      0  |  |  |  |  V  |  |  |  |  D
-//      (   2s]   4s]   6s]   8s]  10s]
-//      0  |  |  |  |  V  |  |  |  |  D
-
-// I want to have something that will always have a readable value for
-// each timescale that is interesting.
-// We can acheive this by keeping multiple levels of fully merged digests.
-
-// 5
-// []
-// []
-// 0-1s
-//
-// (0-1)-(1-5) (0-5)-(5-10)
-//
-// []            []           []           // Only need to keep an open one if you want to read
-// (0-1)-(1-2)s  (0-1)-(2-3)s (0-1)-(3-4)s 4-5s
-//
-// 5
-// []             []     []     []     []// Only need to keep an open one if you want to read
-// (0-5)-(5-10)s  (0-5)-(10-15s)  15-20s 20-25s 25-30s
-//
-// 5
-// []      []     []
-// 30-60s  60-90s 90-2m
-//
-// 2m-4m 4m-6m 6m-8m  8m-10m
-// []    []    []     []
-//
-// * 0-(10-12)m updated every 5s rotated every 2m
-// []
-
-// You define a base tick unit and then a number of levels each with a number of buckets
-// Then you can define a reader at any unit that is constructable from the base tick unit
-// with a granularity of some smaller unit.
-//
-// For example:
-//
-
-// On add:
-// add to the buffer, if full, merge into open base
-// On tick, check for needs to tick in reverse order
-// Tick by
-
-// The interface we want is to have readers which dictate their trailing age range
-
-// (0-f)-(d-d+w) // three parameter
-//
-// (0-1s)-(5m-5m+30s)
-// (0-1s)-(10s-15s)
-// To acheive this you need to be able to merge
-
-// Tick algorithm:
-// Determine the tick needs from largest down to smallest.
-// Every smaller level will tick if its parent ticks.
-// Ticking generally requires throwing something away and then taking
-// the just produced value from ticking the previous level.
-// I guess it looks like

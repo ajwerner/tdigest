@@ -22,6 +22,7 @@ type Recorder interface {
 // quantile or by value.
 type Reader interface {
 	AddTo(Recorder)
+	TrimmedMean(innerQ float64) float64
 	TotalCount() float64
 	TotalSum() float64
 	ValueAt(q float64) (v float64)
@@ -79,6 +80,13 @@ func (td *TDigest) TotalCount() (c float64) {
 	return tdigest.TotalCount(td.centroids[:td.numMerged])
 }
 
+// TrimmedMean returns the mean of the inner quantile range.
+// It requires flushing the buffer then is an O(1) operation.
+func (td *TDigest) TrimmedMean(inner float64) (c float64) {
+	td.compress()
+	return tdigest.TrimmedMean(td.centroids[:td.numMerged], inner)
+}
+
 // TotalSum returns the total amount of data added to the TDigest weighted by
 // its associated count.
 func (td *TDigest) TotalSum() float64 {
@@ -120,14 +128,15 @@ func (td *TDigest) compress() {
 
 func readerString(r Reader) string {
 	tc := r.TotalCount()
-	return fmt.Sprintf("(%.4f-[%.4f %.4f %.4f]-%.4f) totalCount: %v, avg: %v",
+	return fmt.Sprintf("(%.4f-[%.4f %.4f %.4f]-%.4f) totalCount: %v, avg: %v, trimmed: %v",
 		r.ValueAt(0),
 		r.ValueAt(.25),
 		r.ValueAt(.5),
 		r.ValueAt(.75),
 		r.ValueAt(1),
 		r.TotalCount(),
-		r.TotalSum()/tc)
+		r.TotalSum()/tc,
+		r.TrimmedMean(.9))
 }
 
 func addTo(into Recorder, merged []tdigest.Centroid) {

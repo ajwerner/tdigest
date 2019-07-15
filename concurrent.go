@@ -95,6 +95,13 @@ func (td *Concurrent) TotalSum() (s float64) {
 	return s
 }
 
+// TrimmedMean returns the mean of the inner quantile range.
+// It requires flushing the buffer then is an O(1) operation.
+func (td *Concurrent) TrimmedMean(inner float64) (c float64) {
+	td.Read(func(r Reader) { c = r.TrimmedMean(inner) })
+	return c
+}
+
 // ValueAt returns the value of the quantile q.
 // If q is not in [0, 1], ValueAt will panic.
 // An empty Concurrent will return 0.
@@ -191,6 +198,10 @@ func (td *Concurrent) totalSumRLocked() float64 {
 	return tdigest.TotalSum(td.centroids[:td.mu.numMerged])
 }
 
+func (td *Concurrent) trimmedMeanRLocked(inner float64) float64 {
+	return tdigest.TrimmedMean(td.centroids[:td.mu.numMerged], inner)
+}
+
 func (td *Concurrent) compress() {
 	td.mu.Lock()
 	defer td.mu.Unlock()
@@ -228,4 +239,8 @@ func (rtd *readConcurrent) TotalCount() (c float64) {
 
 func (rtd *readConcurrent) TotalSum() float64 {
 	return (*Concurrent)(rtd).totalSumRLocked()
+}
+
+func (rtd *readConcurrent) TrimmedMean(inner float64) float64 {
+	return (*Concurrent)(rtd).trimmedMeanRLocked(inner)
 }

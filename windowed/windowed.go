@@ -393,7 +393,9 @@ func (r *Reader) Read(
 		trailing = curDur + w.tickInterval*time.Duration(w.mu.ticks%(l.period))
 		l.at(int32(idx)).AddTo(r.mu.buf)
 	}
+	w.mu.open.Read(func(d tdigest.Reader) {
+		d.AddTo(r.mu.buf)
+	})
 	w.mu.RUnlock()
-	// TODO(ajwerner): deal with adding cur
 	f(last, r.mu.buf)
 }

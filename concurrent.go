@@ -95,10 +95,18 @@ func (td *Concurrent) TotalSum() (s float64) {
 	return s
 }
 
-// TrimmedMean returns the mean of the inner quantile range.
-// It requires flushing the buffer then is an O(1) operation.
-func (td *Concurrent) TrimmedMean(inner float64) (c float64) {
-	td.Read(func(r Reader) { c = r.TrimmedMean(inner) })
+// InnerMean returns the mean of the inner quantile range.
+// It requires flushing the buffer then is an O(n) operation on the number
+// of centroids.
+func (td *Concurrent) InnerMean(inner float64) (c float64) {
+	td.Read(func(r Reader) { c = r.InnerMean(inner) })
+	return c
+}
+
+// TrimmedMean returns the mean of the inner quantile range from lo to hi.
+// It requires flushing the buffer then is an O(n) operation.
+func (td *Concurrent) TrimmedMean(lo, hi float64) (c float64) {
+	td.Read(func(r Reader) { c = r.TrimmedMean(lo, hi) })
 	return c
 }
 
@@ -198,8 +206,13 @@ func (td *Concurrent) totalSumRLocked() float64 {
 	return tdigest.TotalSum(td.centroids[:td.mu.numMerged])
 }
 
-func (td *Concurrent) trimmedMeanRLocked(inner float64) float64 {
-	return tdigest.TrimmedMean(td.centroids[:td.mu.numMerged], inner)
+func (td *Concurrent) innerMeanRLocked(inner float64) float64 {
+	tails := (1 - inner) / 2
+	return tdigest.TrimmedMean(td.centroids[:td.mu.numMerged], tails, 1-tails)
+}
+
+func (td *Concurrent) trimmedMeanRLocked(lo, hi float64) float64 {
+	return tdigest.TrimmedMean(td.centroids[:td.mu.numMerged], lo, hi)
 }
 
 func (td *Concurrent) compress() {
@@ -241,6 +254,10 @@ func (rtd *readConcurrent) TotalSum() float64 {
 	return (*Concurrent)(rtd).totalSumRLocked()
 }
 
-func (rtd *readConcurrent) TrimmedMean(inner float64) float64 {
-	return (*Concurrent)(rtd).trimmedMeanRLocked(inner)
+func (rtd *readConcurrent) InnerMean(inner float64) float64 {
+	return (*Concurrent)(rtd).innerMeanRLocked(inner)
+}
+
+func (rtd *readConcurrent) TrimmedMean(lo, hi float64) float64 {
+	return (*Concurrent)(rtd).trimmedMeanRLocked(lo, hi)
 }

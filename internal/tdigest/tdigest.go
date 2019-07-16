@@ -14,13 +14,13 @@ type Centroid struct {
 	Mean, Count float64
 }
 
-func TrimmedMean(merged []Centroid, inner float64) float64 {
+func TrimmedMean(merged []Centroid, lo, hi float64) float64 {
 	if len(merged) == 0 {
 		return 0
 	}
-	tails := (1 - inner) / 2
-	leftTailCount := tails * merged[len(merged)-1].Count
-	rightTailCount := (1 - tails) * merged[len(merged)-1].Count
+	totalCount := merged[len(merged)-1].Count
+	leftTailCount := lo * totalCount
+	rightTailCount := hi * totalCount
 	var countSeen float64
 	var weightedMean float64
 	for i, c := range merged {
@@ -41,7 +41,8 @@ func TrimmedMean(merged []Centroid, inner float64) float64 {
 		}
 		weightedMean += c.Mean * (c.Count - countSeen)
 	}
-	return weightedMean / (merged[len(merged)-1].Count * inner)
+	includedCount := totalCount * (hi - lo)
+	return weightedMean / includedCount
 }
 
 func ValueAt(merged []Centroid, q float64) float64 {

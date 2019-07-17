@@ -105,6 +105,7 @@ func QuantileOf(merged []Centroid, v float64) float64 {
 	if i > 1 {
 		nl.Count -= merged[i-2].Count
 	}
+	k -= nl.Count / 2
 	delta := (nr.Mean - nl.Mean)
 	cost := ((nl.Count / 2) + (nr.Count / 2))
 	m := delta / cost

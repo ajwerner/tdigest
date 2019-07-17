@@ -7,7 +7,7 @@ import (
 	"github.com/ajwerner/tdigest/internal/tdigest"
 )
 
-// Sketch is an
+// Sketch is a representation of a distribution which can be updated.
 type Sketch interface {
 	Reader
 	Recorder

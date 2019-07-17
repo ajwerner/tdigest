@@ -51,5 +51,7 @@ func TestWindowed(t *testing.T) {
 			fmt.Printf("%6v %6v %v\n", d, trailing, reader)
 		})
 	}
+	var other windowed.Reader
+	fmt.Println(r.KSScore(5*time.Minute, 3*time.Minute, w, 100, &other))
 	fmt.Println(w)
 }

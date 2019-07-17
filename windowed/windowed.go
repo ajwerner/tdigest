@@ -2,6 +2,7 @@ package windowed
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -337,6 +338,31 @@ type Reader struct {
 		w   *TDigest
 		buf *tdigest.TDigest
 	}
+}
+
+func (r *Reader) KSScore(
+	a, b time.Duration, w *TDigest, steps int, other *Reader,
+) (deltaMax, ks float64) {
+	step := 1.0 / float64(steps)
+	r.Read(a, w, func(_ time.Duration, ar tdigest.Reader) {
+		other.Read(b, w, func(_ time.Duration, br tdigest.Reader) {
+			q := 0.0
+			for i := 0; i <= steps; i++ {
+				av := ar.ValueAt(q)
+				bq := br.QuantileOf(av)
+				if math.Abs(q-bq) > math.Abs(deltaMax) {
+					deltaMax = q - bq
+				}
+				if q += step; q > 1 { // deal with float precsion.
+					q = 1
+				}
+			}
+			ac := ar.TotalCount()
+			bc := br.TotalCount()
+			ks = math.Sqrt((ac + bc) / (ac * bc))
+		})
+	})
+	return deltaMax, ks
 }
 
 func (r *Reader) Read(

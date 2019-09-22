@@ -61,7 +61,7 @@ type compressionOption float64
 
 func (o compressionOption) apply(cfg *config) { cfg.compression = float64(o) }
 func (o compressionOption) String() string {
-	return fmt.Sprintf("compression=%f", o)
+	return fmt.Sprintf("compression=%.1f", o)
 }
 
 type scaleOption struct{ scale.Func }

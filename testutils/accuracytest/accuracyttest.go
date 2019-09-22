@@ -41,65 +41,6 @@ func (at *AccuracyTest) Run(t testing.TB) {
 	checkAccuracy(t, data, s)
 }
 
-var (
-	Distributions = []Option{
-		Distribution("Uniform", rand.Float64),
-		Distribution("Normal", rand.NormFloat64),
-		Distribution("Exponential", rand.ExpFloat64),
-	}
-	Orders = []Option{
-		Order("ascending", sort.Float64s),
-		Order("descending", func(data []float64) {
-			sort.Slice(data, func(i, j int) bool {
-				return data[i] > data[j]
-			})
-		}),
-		Order("shuffled", func(data []float64) {
-			rand.Shuffle(len(data), func(i, j int) {
-				data[i], data[j] = data[j], data[i]
-			})
-		}),
-	}
-	ConstructorOps = testutils.CombineOptions(
-		[]tdigest.Option{
-			tdigest.BufferFactor(1),
-			tdigest.BufferFactor(2),
-			tdigest.BufferFactor(5),
-			tdigest.BufferFactor(10),
-			tdigest.BufferFactor(20),
-		},
-		[]tdigest.Option{
-			tdigest.Compression(16),
-			tdigest.Compression(64),
-			tdigest.Compression(128),
-			tdigest.Compression(256),
-			tdigest.Compression(512),
-		},
-		[]tdigest.Option{
-			tdigest.UseWeightLimit(true),
-			tdigest.UseWeightLimit(false),
-		},
-	)
-	CombinedOptions = CombineOptions(
-		[]Option{N(100000)},
-		Distributions,
-		Orders,
-		Constructors(
-			"Concurrent",
-			func(o ...tdigest.Option) tdigest.Sketch {
-				return tdigest.NewConcurrent(o...)
-			},
-			ConstructorOps),
-	)
-	Tests = func(testOptions ...[]Option) []AccuracyTest {
-		tests := make([]AccuracyTest, len(testOptions))
-		for i := range tests {
-			optionSlice(testOptions[i]).apply(&tests[i])
-		}
-		return tests
-	}(CombinedOptions...)
-)
-
 func Constructors(
 	name string, f func(o ...tdigest.Option) tdigest.Sketch, optionSets [][]tdigest.Option,
 ) []Option {
@@ -114,6 +55,29 @@ func Constructors(
 	}
 	return out
 }
+
+var (
+	// Distributions is a useful set of distributions for accuracy testing.
+	Distributions = []Option{
+		Distribution("Uniform", rand.Float64),
+		Distribution("Normal", rand.NormFloat64),
+		Distribution("Exponential", rand.ExpFloat64),
+	}
+	// Orders is a set of data orders to insert into a sketch.
+	Orders = []Option{
+		Order("ascending", sort.Float64s),
+		Order("descending", func(data []float64) {
+			sort.Slice(data, func(i, j int) bool {
+				return data[i] > data[j]
+			})
+		}),
+		Order("shuffled", func(data []float64) {
+			rand.Shuffle(len(data), func(i, j int) {
+				data[i], data[j] = data[j], data[i]
+			})
+		}),
+	}
+)
 
 // CombineOptions makes a cartesian product of options
 func CombineOptions(options ...[]Option) [][]Option {
@@ -133,6 +97,16 @@ func CombineOptions(options ...[]Option) [][]Option {
 	}
 	testutils.CartesianProduct(create, set, dims...)
 	return out
+}
+
+// MakeTests makes a slice of tests where each test has been configured with
+// the passed slice of options.
+func MakeTests(testOptions ...[]Option) []AccuracyTest {
+	tests := make([]AccuracyTest, len(testOptions))
+	for i := range tests {
+		optionSlice(testOptions[i]).apply(&tests[i])
+	}
+	return tests
 }
 
 func Options(o ...Option) Option { return optionSlice(o) }

@@ -38,10 +38,12 @@ func BufferFactor(factor int) Option {
 	return bufferFactorOption(factor)
 }
 
+// Compression controls the maximum number of centroids.
 func Compression(compression float64) Option {
 	return compressionOption(compression)
 }
 
+// UseWeightLimit enables the weight
 func UseWeightLimit(useWeightLimit bool) Option {
 	return weightLimitOption(useWeightLimit)
 }

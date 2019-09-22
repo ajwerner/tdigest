@@ -23,6 +23,10 @@ type AccuracyTest struct {
 	checkFunc func(sketch tdigest.Sketch, data []float64)
 }
 
+func (at *AccuracyTest) String() string {
+	return at.name + " " + at.distribution.name + " " + at.order.name
+}
+
 func (at *AccuracyTest) Run(t testing.TB) {
 	if at.addFunc == nil {
 		at.addFunc = add
@@ -37,69 +41,63 @@ func (at *AccuracyTest) Run(t testing.TB) {
 	checkAccuracy(t, data, s)
 }
 
-var ConstructorOps = testutils.CombineOptions(
-	[]tdigest.Option{
-		tdigest.BufferFactor(1),
-		tdigest.BufferFactor(2),
-		tdigest.BufferFactor(5),
-		tdigest.BufferFactor(10),
-		tdigest.BufferFactor(20),
-	},
-	[]tdigest.Option{
-		tdigest.Compression(64),
-		tdigest.Compression(128),
-		tdigest.Compression(256),
-		tdigest.Compression(512),
-	},
-	[]tdigest.Option{
-		tdigest.UseWeightLimit(true),
-		tdigest.UseWeightLimit(false),
-	},
-)
-
-var Tests = makeTests(
-	CombineOptions(
-		[]Option{N(10000)},
+var (
+	Distributions = []Option{
+		Distribution("Uniform", rand.Float64),
+		Distribution("Normal", rand.NormFloat64),
+		Distribution("Exponential", rand.ExpFloat64),
+	}
+	Orders = []Option{
+		Order("ascending", sort.Float64s),
+		Order("descending", func(data []float64) {
+			sort.Slice(data, func(i, j int) bool {
+				return data[i] > data[j]
+			})
+		}),
+		Order("shuffled", func(data []float64) {
+			rand.Shuffle(len(data), func(i, j int) {
+				data[i], data[j] = data[j], data[i]
+			})
+		}),
+	}
+	ConstructorOps = testutils.CombineOptions(
+		[]tdigest.Option{
+			tdigest.BufferFactor(1),
+			tdigest.BufferFactor(2),
+			tdigest.BufferFactor(5),
+			tdigest.BufferFactor(10),
+			tdigest.BufferFactor(20),
+		},
+		[]tdigest.Option{
+			tdigest.Compression(64),
+			tdigest.Compression(128),
+			tdigest.Compression(256),
+			tdigest.Compression(512),
+		},
+		[]tdigest.Option{
+			tdigest.UseWeightLimit(true),
+			tdigest.UseWeightLimit(false),
+		},
+	)
+	CombinedOptions = CombineOptions(
+		[]Option{N(100000)},
 		Distributions,
 		Orders,
-		Constructors("Concurrent", func(o ...tdigest.Option) tdigest.Sketch {
-			return tdigest.NewConcurrent(o...)
-		},
+		Constructors(
+			"Concurrent",
+			func(o ...tdigest.Option) tdigest.Sketch {
+				return tdigest.NewConcurrent(o...)
+			},
 			ConstructorOps),
-	),
+	)
+	Tests = func(testOptions ...[]Option) []AccuracyTest {
+		tests := make([]AccuracyTest, len(testOptions))
+		for i := range tests {
+			optionSlice(testOptions[i]).apply(&tests[i])
+		}
+		return tests
+	}(CombinedOptions...)
 )
-
-func (at *AccuracyTest) String() string {
-	return at.name + " " + at.distribution.name + " " + at.order.name
-}
-
-var Distributions = []Option{
-	Distribution("Uniform", rand.Float64),
-	Distribution("Normal", rand.NormFloat64),
-	Distribution("Exponential", rand.ExpFloat64),
-}
-
-var Orders = []Option{
-	Order("ascending", sort.Float64s),
-	Order("descending", func(data []float64) {
-		sort.Slice(data, func(i, j int) bool {
-			return data[i] > data[j]
-		})
-	}),
-	Order("shuffled", func(data []float64) {
-		rand.Shuffle(len(data), func(i, j int) {
-			data[i], data[j] = data[j], data[i]
-		})
-	}),
-}
-
-func makeTests(options [][]Option) []AccuracyTest {
-	tests := make([]AccuracyTest, len(options))
-	for i := range tests {
-		optionSlice(options[i]).apply(&tests[i])
-	}
-	return tests
-}
 
 func Constructors(
 	name string, f func(o ...tdigest.Option) tdigest.Sketch, optionSets [][]tdigest.Option,
@@ -251,7 +249,7 @@ func checkAccuracy(t testing.TB, data []float64, h tdigest.Sketch) {
 		avg := math.Abs((v + got) / 2)
 		errRatio := math.Abs(v-got) / avg
 		if log {
-			t.Logf("%.5f %.5f %.9v %16.9v %v\n", errRatio, q, v, got, h.QuantileOf(got))
+			t.Logf("%.5f %.5f %.9v %16.9v %v\n", errRatio, q, v, got, h.QuantileOf(v))
 		}
 		qq := math.Abs(q - .5)
 		limit := 2.0

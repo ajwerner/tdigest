@@ -137,16 +137,18 @@ func (td *TDigest) compress() {
 }
 
 func readerString(r Reader) string {
-	tc := r.TotalCount()
-	return fmt.Sprintf("(%.4f-[%.4f %.4f %.4f]-%.4f) totalCount: %v, avg: %v, trimmed: %v",
-		r.ValueAt(0),
-		r.ValueAt(.25),
-		r.ValueAt(.5),
-		r.ValueAt(.75),
-		r.ValueAt(1),
+	return fmt.Sprintf("TDigest{N=%f,(%.4f..%4f-[%.4f %.4f (%.4f) %.4f %.4f]-%.4f..%.4f}",
 		r.TotalCount(),
-		r.TotalSum()/tc,
-		r.TrimmedMean(.05, .95))
+		r.ValueAt(0),
+		r.ValueAt(.1),
+		r.ValueAt(.2),
+		r.ValueAt(.4),
+		r.InnerMean(.8),
+		r.ValueAt(.6),
+		r.ValueAt(.8),
+		r.ValueAt(.9),
+		r.ValueAt(1),
+	)
 }
 
 func addTo(into Recorder, merged []tdigest.Centroid) {

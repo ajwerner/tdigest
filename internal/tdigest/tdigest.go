@@ -1,4 +1,4 @@
-// package tdigest contains the low-level algorithms to compress and query
+// Package tdigest contains the low-level algorithms to compress and query
 // lists of centroids.
 package tdigest
 

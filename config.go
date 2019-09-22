@@ -43,7 +43,9 @@ func Compression(compression float64) Option {
 	return compressionOption(compression)
 }
 
-// UseWeightLimit enables the weight
+// UseWeightLimit enables the weightLimit compression heuristic. It is cheaper
+// to compute but does not provide a strict upper bound on the total compressed
+// size of the TDigest.
 func UseWeightLimit(useWeightLimit bool) Option {
 	return weightLimitOption(useWeightLimit)
 }

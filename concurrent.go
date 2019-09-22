@@ -2,6 +2,7 @@ package tdigest
 
 import (
 	"fmt"
+	"math"
 	"sync"
 	"sync/atomic"
 
@@ -132,6 +133,13 @@ func (td *Concurrent) Add(mean, count float64) {
 	td.mu.RLock()
 	defer td.mu.RUnlock()
 	td.centroids[td.getAddIndexRLocked()] = tdigest.Centroid{Mean: mean, Count: count}
+}
+
+// CompressionSize is the maximum number of centroids which a TDigest will
+// store when fully compressed. If the TDigest is using the weightLimit
+// heuristic then this is a target, not an upper bound.
+func (td *Concurrent) CompressionSize() int {
+	return int(math.Ceil(td.compression))
 }
 
 // Record records adds a value with a count of 1.

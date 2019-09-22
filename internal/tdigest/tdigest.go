@@ -78,7 +78,7 @@ func ValueAt(merged []Centroid, q float64) float64 {
 			nl.Count -= merged[i-2].Count
 		}
 		nr = n
-		k -= nr.Count / 2
+		k -= nl.Count / 2
 	}
 	x := goal - k
 	m := (nr.Mean - nl.Mean) / ((nl.Count / 2) + (nr.Count / 2))

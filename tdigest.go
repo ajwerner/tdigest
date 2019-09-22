@@ -2,6 +2,7 @@ package tdigest
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/ajwerner/tdigest/internal/scale"
 	"github.com/ajwerner/tdigest/internal/tdigest"
@@ -30,6 +31,14 @@ type Reader interface {
 	QuantileOf(v float64) (q float64)
 }
 
+// CompressionSizer is an interface to expose the Compression factor for a tdigest.
+type CompressionSizer interface {
+	// CompressionSize is the maximum number of centroids which a TDigest will
+	// store when fully compressed. If the TDigest is using the weightLimit
+	// heuristic then this is a target, not an upper bound.
+	CompressionSize() int
+}
+
 type TDigest struct {
 	scale          scale.Func
 	compression    float64
@@ -52,6 +61,7 @@ func New(options ...Option) *TDigest {
 	return &td
 }
 
+// Add adds data to the TDigest with the provided mean and count.
 func (td *TDigest) Add(mean, count float64) {
 	if td.unmergedIdx == len(td.centroids) {
 		td.compress()
@@ -66,6 +76,12 @@ func (td *TDigest) Add(mean, count float64) {
 // Record is a shorthand for td.Add(mean, 1).
 func (td *TDigest) Record(mean float64) {
 	td.Add(mean, 1)
+}
+
+// CompressionSize is the maximum number of centroids which a TDigest will
+// store when fully compressed.
+func (td *TDigest) CompressionSize() int {
+	return int(math.Ceil(td.compression))
 }
 
 // AddTo adds the data from td into the provided Recorder.

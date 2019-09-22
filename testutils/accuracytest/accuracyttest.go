@@ -69,6 +69,7 @@ var (
 			tdigest.BufferFactor(20),
 		},
 		[]tdigest.Option{
+			tdigest.Compression(16),
 			tdigest.Compression(64),
 			tdigest.Compression(128),
 			tdigest.Compression(256),
@@ -238,32 +239,31 @@ var quantilesToCheck = []float64{
 }
 
 const log = true
+const defaultCompressionSize = 128
 
 func checkAccuracy(t testing.TB, data []float64, h tdigest.Sketch) {
 	sort.Float64s(data)
 	N := float64(len(data))
+	compressionSize := defaultCompressionSize
+	if cs, ok := h.(tdigest.CompressionSizer); ok {
+		compressionSize = cs.CompressionSize()
+	}
 	// check accurracy
-	for _, q := range quantilesToCheck {
+	var prevValueAt float64
+	for i, q := range quantilesToCheck {
 		v := data[int((N-1)*q)]
 		got := h.ValueAt(q)
+		if i > 0 && got < prevValueAt {
+			t.Errorf("Got a value at %v for %v but got a higher value %v at %v",
+				q, got, prevValueAt, quantilesToCheck[i-1])
+		}
+		prevValueAt = got
 		avg := math.Abs((v + got) / 2)
 		errRatio := math.Abs(v-got) / avg
 		if log {
 			t.Logf("%.5f %.5f %.9v %16.9v %v\n", errRatio, q, v, got, h.QuantileOf(v))
 		}
-		qq := math.Abs(q - .5)
-		limit := 2.0
-		if qq > .4999 {
-			limit = .2
-		} else if qq > .49 {
-			limit = .3
-		} else if qq > .4 {
-			limit = .4
-		} else if limit > .3 {
-			limit = .5
-		} else if limit > .2 {
-			limit = .8
-		}
+		limit := permittedError(float64(compressionSize), q, N)
 		if errRatio > limit && avg > .1 && math.Abs(got-avg) > .001 {
 			t.Errorf("Got error %v for q %v (%v vs %v)",
 				errRatio, q, v, got)
@@ -272,6 +272,27 @@ func checkAccuracy(t testing.TB, data []float64, h tdigest.Sketch) {
 	if log {
 		t.Logf("%v\n", h)
 	}
+}
+
+// permittedError is a bespoke, eye-ball statistics check on the acceptable
+// amount of error for a sketch given its compressionSize setting, the
+// quantile and the number of data points.
+func permittedError(compressionSize, q, n float64) float64 {
+	qq := math.Abs(q - .5)
+	limit := 2.0
+	if qq > .4999 {
+		limit = .2
+	} else if qq > .49 {
+		limit = .3
+	} else if qq > .4 {
+		limit = .4
+	} else if limit > .3 {
+		limit = .5
+	} else if limit > .2 {
+		limit = .8
+	}
+	limit *= defaultCompressionSize / compressionSize
+	return limit
 }
 
 // divide splits up n items into a specified number of parts which vary in size

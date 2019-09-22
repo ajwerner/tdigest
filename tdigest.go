@@ -22,13 +22,17 @@ type Recorder interface {
 // Reader provides read access to a float64 valued distribution by
 // quantile or by value.
 type Reader interface {
-	AddTo(Recorder)
 	InnerMean(innerQ float64) float64
 	TrimmedMean(lo, hi float64) float64
 	TotalCount() float64
 	TotalSum() float64
 	ValueAt(q float64) (v float64)
 	QuantileOf(v float64) (q float64)
+}
+
+// AddToer allows a sketch to be added to another.
+type AddToer interface {
+	AddTo(Recorder)
 }
 
 // CompressionSizer is an interface to expose the Compression factor for a tdigest.

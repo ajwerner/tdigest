@@ -33,12 +33,19 @@ func TestAccuracy(t *testing.T) {
 		[]accuracytest.Option{accuracytest.N(100000)},
 		accuracytest.Distributions,
 		accuracytest.Orders,
-		accuracytest.Constructors(
-			"Concurrent",
-			func(o ...tdigest.Option) tdigest.Sketch {
-				return tdigest.NewConcurrent(o...)
-			},
-			constructorOps),
+		append(
+			accuracytest.Constructors(
+				"Concurrent",
+				func(o ...tdigest.Option) tdigest.Sketch {
+					return tdigest.NewConcurrent(o...)
+				},
+				constructorOps),
+			accuracytest.Constructors(
+				"TDigest",
+				func(o ...tdigest.Option) tdigest.Sketch {
+					return tdigest.New(o...)
+				},
+				constructorOps)...),
 	)...)
 	for _, at := range tests {
 		t.Run(at.String(), func(t *testing.T) { at.Run(t) })

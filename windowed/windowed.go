@@ -394,7 +394,7 @@ func (r *Reader) Read(
 		l.at(int32(idx)).AddTo(r.mu.buf)
 	}
 	w.mu.open.Read(func(d tdigest.Reader) {
-		d.AddTo(r.mu.buf)
+		d.(tdigest.AddToer).AddTo(r.mu.buf)
 	})
 	w.mu.RUnlock()
 	f(last, r.mu.buf)

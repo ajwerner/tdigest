@@ -159,7 +159,7 @@ func (td *Concurrent) addToRLocked(into Recorder) {
 
 // AddTo adds the currently recorded data into the provided Recorder.
 func (td *Concurrent) AddTo(into Recorder) {
-	td.Read(func(r Reader) { r.AddTo(into) })
+	td.Read(func(r Reader) { r.(AddToer).AddTo(into) })
 }
 
 func (td *Concurrent) getAddIndexRLocked() (r int) {
